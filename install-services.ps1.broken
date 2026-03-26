@@ -1,0 +1,42 @@
+# 账单项目服务安装脚本 (改进版 - 需管理员权限)
+
+# 1. 管理员权限检查
+$currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+if (!$currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Write-Host "错误: 请右键点击此脚本，选择 '以管理员身份运行'！" -ForegroundColor Red
+    pause
+    exit
+}
+
+$nssm = "C:\Users\norah\AppData\Local\Microsoft\WinGet\Packages\NSSM.NSSM_Microsoft.Winget.Source_8wekyb3d8bbwe\nssm-2.24-101-g897c7ad\win64\nssm.exe"
+$backendDir = "c:\仓库\Antigravity-Manager\账单"
+$frontendDir = "c:\仓库\Antigravity-Manager\账单\web"
+$python = "c:\仓库\Antigravity-Manager\.venv\Scripts\python.exe"
+$npm = "C:\Program Files\nodejs\npm.cmd"
+
+# 检查目录
+if (!(Test-Path "$backendDir\logs")) { New-Item -ItemType Directory -Path "$backendDir\logs" -Force }
+
+Write-Host "--- 正在清理旧服务 (如果存在) ---" -ForegroundColor Yellow
+& $nssm stop billing-backend 2>$null
+& $nssm remove billing-backend confirm 2>$null
+& $nssm stop billing-frontend 2>$null
+& $nssm remove billing-frontend confirm 2>$null
+
+Write-Host "--- 正在注册后端服务: billing-backend ---" -ForegroundColor Cyan
+& $nssm install billing-backend "$python" "-m uvicorn api.main:app --host 0.0.0.0 --port 8000"
+& $nssm set billing-backend AppDirectory "$backendDir"
+& $nssm set billing-backend AppStdout "$backendDir\logs\backend.log"
+& $nssm set billing-backend AppStderr "$backendDir\logs\backend.log"
+& $nssm start billing-backend
+
+Write-Host "--- 正在注册前端服务: billing-frontend ---" -ForegroundColor Cyan
+& $nssm install billing-frontend "$npm" "run dev -- --host 0.0.0.0"
+& $nssm set billing-frontend AppDirectory "$frontendDir"
+& $nssm set billing-frontend AppStdout "$backendDir\logs\frontend.log"
+& $nssm set billing-frontend AppStderr "$backendDir\logs\frontend.log"
+& $nssm start billing-frontend
+
+Write-Host "`n完成！服务已重新安装并在后台启动。" -ForegroundColor Green
+Write-Host "如果网页仍无法打开，请检查 $backendDir\logs 文件夹下的日志文件。"
+pause

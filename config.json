@@ -1,0 +1,50 @@
+{
+    "feishu": {
+        "app_id": "cli_a901555a41a15cc5",
+        "app_secret": "yi9tX7n7IiZl8JyvxF6QNA0STH4FqeFR",
+        "approval_codes": {
+            "payment": "这里填付款审批的Code",
+            "reimbursement": "这里填报销审批的Code"
+        }
+    },
+    "kingdee": {
+        "voucher_word": "记",
+        "currency": "RMB"
+    },
+    "account_mapping": {
+        "付款-差旅费": {
+            "code": "6602.01",
+            "name": "管理费用_差旅费"
+        },
+        "付款-办公费": {
+            "code": "6602.02",
+            "name": "管理费用_办公费"
+        },
+        "报销-交通费": {
+            "code": "6602.03",
+            "name": "管理费用_交通费"
+        },
+        "DEFAULT": {
+            "code": "6602.99",
+            "name": "管理费用_其他"
+        }
+    },
+    "field_mapping": {
+        "payment": {
+            "amount": "付款金额",
+            "date": "付款日期",
+            "reason": "付款事由",
+            "detail_list": "付款明细"
+        },
+        "reimbursement": {
+            "amount": "报销总金额",
+            "date": "报销日期",
+            "reason": "报销事由",
+            "detail_list": "费用明细",
+            "detail_fields": {
+                "amount": "费用金额",
+                "category": "费用类别"
+            }
+        }
+    }
+}

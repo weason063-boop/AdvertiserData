@@ -1,0 +1,51 @@
+@echo off
+chcp 65001 >nul
+setlocal enabledelayedexpansion
+title 账单项目后台服务安装工具
+
+:: 1. 管理员权限检查
+echo 正在检查管理员权限...
+net session >nul 2>&1
+if %errorLevel% neq 0 (
+    echo [错误] 请右键点击此文件，选择“以管理员身份运行”！
+    pause
+    exit /b %errorLevel%
+)
+
+:: 2. 路径配置
+set NSSM="C:\Users\norah\AppData\Local\Microsoft\WinGet\Packages\NSSM.NSSM_Microsoft.Winget.Source_8wekyb3d8bbwe\nssm-2.24-101-g897c7ad\win64\nssm.exe"
+set BACKEND_DIR=c:\仓库\Antigravity-Manager\账单
+set FRONTEND_DIR=c:\仓库\Antigravity-Manager\账单\web
+set PYTHON=c:\仓库\Antigravity-Manager\.venv\Scripts\python.exe
+set NPM="C:\Program Files\nodejs\npm.cmd"
+
+:: 3. 准备工作
+if not exist "%BACKEND_DIR%\logs" mkdir "%BACKEND_DIR%\logs"
+
+echo --- 正在清理旧服务 ---
+%NSSM% stop billing-backend >nul 2>&1
+%NSSM% remove billing-backend confirm >nul 2>&1
+%NSSM% stop billing-frontend >nul 2>&1
+%NSSM% remove billing-frontend confirm >nul 2>&1
+
+echo --- 正在注册后端服务: billing-backend ---
+%NSSM% install billing-backend %PYTHON% -m uvicorn api.main:app --host 0.0.0.0 --port 8000
+%NSSM% set billing-backend AppDirectory "%BACKEND_DIR%"
+%NSSM% set billing-backend AppStdout "%BACKEND_DIR%\logs\backend.log"
+%NSSM% set billing-backend AppStderr "%BACKEND_DIR%\logs\backend.log"
+%NSSM% start billing-backend
+
+echo --- 正在注册前端服务: billing-frontend ---
+%NSSM% install billing-frontend %NPM% run dev -- --host 0.0.0.0
+%NSSM% set billing-frontend AppDirectory "%FRONTEND_DIR%"
+%NSSM% set billing-frontend AppStdout "%BACKEND_DIR%\logs\frontend.log"
+%NSSM% set billing-frontend AppStderr "%BACKEND_DIR%\logs\frontend.log"
+%NSSM% start billing-frontend
+
+echo.
+echo =======================================================
+echo  完成！后端和前端服务已安装并开始在后台运行。
+echo  您现在可以关闭此窗口。
+echo  管理服务请使用: manage-services.bat
+echo =======================================================
+pause

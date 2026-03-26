@@ -1,0 +1,75 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual Environment
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Database
+*.db
+*.db-journal
+
+# Environment
+.env
+
+# Uploads
+uploads/
+
+# Node
+node_modules/
+
+# Build output
+web/dist/
+
+# Backups
+*.backup-*
+*.backup
+
+# OS
+.DS_Store
+Thumbs.db
+
+# pytest
+.pytest_cache/
+.pytest-basetemp-*
+
+# Temporary files
+*.tmp
+tmp_*
+tmp_*/
+
+# Local spreadsheets
+*.xlsx
+*.xls
+
+# Old publish/release copies
+.publish-*/
+publish-release-*/
+.recheck-*/
+.review-*/
+
+# Logs
+logs/
+
+# Coverage
+.coverage
+
+# Agent / Gemini
+.agent/
+.agents/
+.gemini/
+
+# Misc
+frontend-design/
+

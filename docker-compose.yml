@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    container_name: billing-backend
+    env_file:
+      - .env
+    volumes:
+      - ./contracts.db:/app/contracts.db
+      - ./uploads:/app/uploads
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    container_name: billing-frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend

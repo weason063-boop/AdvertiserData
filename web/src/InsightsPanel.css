@@ -1,0 +1,183 @@
+/* Insights Panel Styles */
+.insights-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 1.5rem;
+    margin-bottom: 2rem;
+}
+
+.insight-card {
+    background: white;
+    border-radius: 16px;
+    padding: 1.5rem;
+    box-shadow: var(--shadow-sm);
+    border: 1px solid var(--border-subtle);
+    transition: all 0.3s ease;
+    display: flex;
+    flex-direction: column;
+}
+
+.insight-card:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-md);
+}
+
+.insight-header {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid var(--border-subtle);
+}
+
+.insight-icon {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.2rem;
+}
+
+.insight-title {
+    font-family: var(--font-display);
+    font-weight: 600;
+    color: var(--text-main);
+    font-size: 1.1rem;
+    margin: 0;
+}
+
+/* Insight Types - Colors */
+.insight-card.anomaly .insight-icon {
+    background: #FEF2F2;
+    color: #EF4444;
+}
+
+.insight-card.churn .insight-icon {
+    background: #FFF7ED;
+    color: #F97316;
+}
+
+.insight-card.growth .insight-icon {
+    background: #F0FDF4;
+    color: #10B981;
+}
+
+.insight-card.segmentation .insight-icon {
+    background: #EFF6FF;
+    color: #3B82F6;
+}
+
+/* List Items */
+.insight-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    flex: 1;
+}
+
+.insight-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem 0.75rem;
+    background: var(--bg-main);
+    border-radius: 8px;
+    font-size: 0.9rem;
+}
+
+.insight-item-main {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+}
+
+.insight-client-name {
+    font-weight: 600;
+    color: var(--text-main);
+}
+
+.insight-detail {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+.insight-value {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    font-size: 0.95rem;
+}
+
+.insight-value.positive {
+    color: #10B981;
+}
+
+.insight-value.negative {
+    color: #EF4444;
+}
+
+.insight-value.neutral {
+    color: var(--text-secondary);
+}
+
+/* Segmentation Bar */
+.seg-bar-container {
+    margin-top: auto;
+    padding-top: 1rem;
+}
+
+.seg-bar {
+    height: 8px;
+    border-radius: 4px;
+    background: #E2E8F0;
+    display: flex;
+    overflow: hidden;
+    margin-bottom: 0.5rem;
+}
+
+.seg-segment {
+    height: 100%;
+    transition: width 0.5s ease;
+}
+
+.seg-legend {
+    display: flex;
+    gap: 1rem;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+.legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.legend-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+}
+
+.empty-insight {
+    color: var(--text-hint);
+    font-style: italic;
+    text-align: center;
+    padding: 1rem;
+    font-size: 0.9rem;
+}
+
+/* Sparkline Container */
+.recharts-responsive-container {
+    /* Fix for some recharts sizing issues */
+    min-width: 0;
+}
+
+/* Top Clients in Segmentation */
+.insight-item-main.top-client {
+    display: flex;
+    justify-content: space-between;
+    width: 100%;
+}

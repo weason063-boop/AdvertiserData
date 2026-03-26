@@ -1,0 +1,7 @@
+Found 0 clients with discrepancies > $1.0:
+
+
+🔍 Checking '能用' (Nengyong) specifically:
+      服务费_Auto  固定服务费_Auto  代投消耗_Auto  流水消耗_Auto  服务费_Manual  固定服务费_Manual  代投消耗_Manual  流水消耗_Manual  Service_Diff  Fixed_Diff  Total_Diff
+母公司                                                                                                                                       
+能用科技    1000.0         0.0    1519.85        0.0      1000.0           0.0      1519.85          0.0           0.0         0.0         0.0

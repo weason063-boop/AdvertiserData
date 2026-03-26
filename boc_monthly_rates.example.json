@@ -1,0 +1,14 @@
+{
+  "2026-01": {
+    "jpy_spot_sell": 0.0489,
+    "usd_spot_buy": 7.1045,
+    "rate_date": "2026-01-31",
+    "source": "boc_manual"
+  },
+  "2026-02": {
+    "jpy_spot_sell": 0.0492,
+    "usd_spot_buy": 7.1188,
+    "rate_date": "2026-02-28",
+    "source": "boc_manual"
+  }
+}

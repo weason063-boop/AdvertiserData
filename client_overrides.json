@@ -1,0 +1,52 @@
+{
+    "_comment": "客户特殊计费规则配置。每个客户可包含以下 action 类型：remove_time_constraint, force_service_type, fixed_rate, exclude_media, media_rate, force_no_fee, custom_label_alias",
+    "overrides": {
+        "昊一源": {
+            "action": "remove_time_constraint",
+            "description": "忽略条款中的时间限制（如 '2月起'），强制计算",
+            "force_keyword": "Facebook"
+        },
+        "飞亚达": {
+            "action": "force_service_type",
+            "description": "强制转为流水类型（忽略代投固定费+点位）",
+            "service_type": "流水"
+        },
+        "农夫山泉": {
+            "action": "conditional_zero",
+            "description": "条款含 '无代投服务费' 且服务类型为代投时返回 0",
+            "condition_keyword": "无代投服务费",
+            "condition_service_type": "代投"
+        },
+        "美的": {
+            "action": "fixed_rate",
+            "description": "所有 '美的' 系客户统一按 5% 计算",
+            "rate": 0.05
+        },
+        "纽莱克": {
+            "action": "exclude_media",
+            "description": "排除 Facebook 媒介（只计算 Google 代投）",
+            "excluded_media": ["Facebook"]
+        },
+        "Acmer": {
+            "action": "media_rate",
+            "description": "Google 流水收 2%",
+            "media": "Google",
+            "service_type": "流水",
+            "rate": 0.02
+        },
+        "上海Liene": {
+            "action": "fixed_rate",
+            "description": "本月免收固定服务费（保留 10% 点位）",
+            "rate": 0.10
+        }
+    },
+    "post_calculation_overrides": {
+        "能用科技": {
+            "action": "move_fixed_to_fee",
+            "description": "用户指出 '1000' 是阶梯服务费，不是固定服务费，将固定费移到服务费列"
+        }
+    },
+    "label_aliases": {
+        "哇鹅默认": ""
+    }
+}
