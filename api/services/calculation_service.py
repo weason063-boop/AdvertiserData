@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import logging
@@ -351,14 +351,13 @@ class CalculationService:
             "source_file": latest.get("source_file", ""),
             "operation": latest.get("operation", ""),
         }
-
     def _normalize_sheet_currency(self, sheet_name: str) -> str | None:
         name = str(sheet_name or "").strip().lower().replace(" ", "")
-        if name in {"jpy", "日元", "日币"}:
+        if any(x in name for x in ("jpy", "日元", "日币")):
             return "JPY"
-        if name in {"rmb", "cny", "人民币"}:
+        if any(x in name for x in ("rmb", "cny", "人民币")):
             return "RMB"
-        if name in {"usd", "美元", "us$"}:
+        if any(x in name for x in ("usd", "美元", "美金", "us$")):
             return "USD"
         if "其他" in name:
             return "OTHER"
@@ -370,7 +369,7 @@ class CalculationService:
             return "RMB"
         if text in {"JPY", "日元", "日币"}:
             return "JPY"
-        if text in {"USD", "美元"}:
+        if text in {"USD", "美元", "美金"}:
             return "USD"
         return text
 

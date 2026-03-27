@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """Billing fee calculation engine."""
 
 from __future__ import annotations
@@ -396,13 +396,26 @@ def calculate_service_fees(
         fixed = _to_float(fixed)
         fee, fixed = apply_post_overrides(customer_str, fee, fixed)
 
+        waiver_match = re.search(r'合计消耗\s*[*×]?\s*(\d+(?:\.\d+)?)\s*%\s*[大超]于(?:等于)?\s*(\d+)', str(clause))
+        if waiver_match and fixed > 0:
+            waiver_rate = float(waiver_match.group(1)) / 100.0
+            waiver_threshold = float(waiver_match.group(2))
+            
+            if service_type == "代投+流水":
+                total_for_waiver = combined_consumption.get((customer_str, "代投"), 0.0) + combined_consumption.get((customer_str, "流水"), 0.0)
+            else:
+                total_for_waiver = combined_consumption.get((customer_str, service_type), 0.0)
+                
+            if total_for_waiver * waiver_rate >= waiver_threshold:
+                fixed = 0.0
+
         service_fees.append(round(fee, 2) if fee > 0 else None)
 
-        is_per_media = "含" in str(clause)
+        is_per_media = any(kw in str(clause) for kw in ["含", "各"])
         dedup_key = (customer_str, media) if is_per_media else customer_str
 
         if fixed > 0 and dedup_key not in customer_fixed_fee_filled:
-            fixed_fees.append(fixed)
+            fixed_fees.append(round(fixed, 2))
             customer_fixed_fee_filled.add(dedup_key)
         else:
             fixed_fees.append(None)
