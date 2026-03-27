@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import re
 from datetime import date, datetime
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Optional
 
@@ -21,6 +22,14 @@ from .contract_loader import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _round2(value: float) -> float:
+    """Standard half-up rounding to 2 decimal places (财务四舍五入)."""
+    try:
+        return float(Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+    except Exception:
+        return round(float(value), 2)
 
 
 def _to_float(value) -> float:
@@ -409,13 +418,13 @@ def calculate_service_fees(
             if total_for_waiver * waiver_rate >= waiver_threshold:
                 fixed = 0.0
 
-        service_fees.append(round(fee, 2) if fee > 0 else None)
+        service_fees.append(_round2(fee) if fee > 0 else None)
 
         is_per_media = any(kw in str(clause) for kw in ["含", "各"])
         dedup_key = (customer_str, media) if is_per_media else customer_str
 
         if fixed > 0 and dedup_key not in customer_fixed_fee_filled:
-            fixed_fees.append(round(fixed, 2))
+            fixed_fees.append(_round2(fixed))
             customer_fixed_fee_filled.add(dedup_key)
         else:
             fixed_fees.append(None)
@@ -450,7 +459,7 @@ def calculate_service_fees(
             _to_float(row["Coupon"]) if "Coupon" in row else 0,
             _to_float(row[dst_col]) if dst_col in row else 0,
         ]
-        return round(sum(values), 2)
+        return _round2(sum(values))
 
     df["汇总"] = df.apply(safe_sum, axis=1)
 
