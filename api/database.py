@@ -7,7 +7,7 @@ from sqlalchemy import create_engine, desc, func, and_, inspect, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker, Session
 from pathlib import Path
-from .models import Base, Client, BillingHistory, ClientMonthlyStats
+from .models import Base, Client, BillingHistory, ClientMonthlyDetailStats, ClientMonthlyNote, ClientMonthlyStats
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 import logging
@@ -71,6 +71,20 @@ def ensure_dashboard_indexes():
                     )
                 )
 
+            if "client_monthly_detail_stats" in table_names:
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_client_monthly_detail_stats_client_month "
+                        "ON client_monthly_detail_stats (client_name, month)"
+                    )
+                )
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_client_monthly_detail_stats_month_total "
+                        "ON client_monthly_detail_stats (month, total)"
+                    )
+                )
+
             if "billing_history" in table_names:
                 conn.execute(
                     text(
@@ -80,6 +94,82 @@ def ensure_dashboard_indexes():
                 )
     except OperationalError as exc:
         logger.warning("ensure_dashboard_indexes skipped due to database operational error: %s", exc)
+
+
+def ensure_client_monthly_detail_stats_table():
+    """
+    Ensure per-client monthly detail aggregation table exists for ledger pages.
+    Safe to run repeatedly.
+    """
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS client_monthly_detail_stats (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        month TEXT NOT NULL,
+                        client_name TEXT NOT NULL,
+                        bill_type TEXT DEFAULT '—',
+                        service_type TEXT DEFAULT '—',
+                        flow_consumption FLOAT DEFAULT 0,
+                        managed_consumption FLOAT DEFAULT 0,
+                        net_consumption FLOAT DEFAULT 0,
+                        service_fee FLOAT DEFAULT 0,
+                        fixed_service_fee FLOAT DEFAULT 0,
+                        coupon FLOAT DEFAULT 0,
+                        dst FLOAT DEFAULT 0,
+                        total FLOAT DEFAULT 0,
+                        CONSTRAINT _month_client_detail_uc UNIQUE (month, client_name)
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_client_monthly_detail_stats_client_month "
+                    "ON client_monthly_detail_stats (client_name, month)"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_client_monthly_detail_stats_month_total "
+                    "ON client_monthly_detail_stats (month, total)"
+                )
+            )
+    except OperationalError as exc:
+        logger.warning("ensure_client_monthly_detail_stats_table skipped due to database operational error: %s", exc)
+
+
+def ensure_client_monthly_notes_table():
+    """
+    Ensure per-client monthly note table exists for editable ledger remarks.
+    Safe to run repeatedly.
+    """
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS client_monthly_notes (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        month TEXT NOT NULL,
+                        client_name TEXT NOT NULL,
+                        note TEXT,
+                        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        CONSTRAINT _month_client_note_uc UNIQUE (month, client_name)
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_client_monthly_notes_client_month "
+                    "ON client_monthly_notes (client_name, month)"
+                )
+            )
+    except OperationalError as exc:
+        logger.warning("ensure_client_monthly_notes_table skipped due to database operational error: %s", exc)
 
 
 def ensure_operation_audit_table():
@@ -323,6 +413,61 @@ def upsert_client(name: str, business_type: str = None, department: str = None,
             db.close()
 
 
+def upsert_client_detail_stats_batch(month: str, stats: List[Dict], db: Session = None):
+    """批量更新客户月度明细统计"""
+    should_close = False
+    if db is None:
+        db = SessionLocal()
+        should_close = True
+    try:
+        for s in stats:
+            client_name = str(s.get("name") or "").strip()
+            if not client_name:
+                continue
+
+            record = db.query(ClientMonthlyDetailStats).filter(
+                ClientMonthlyDetailStats.month == month,
+                ClientMonthlyDetailStats.client_name == client_name,
+            ).first()
+
+            payload = {
+                "bill_type": str(s.get("bill_type") or "—").strip() or "—",
+                "service_type": str(s.get("service_type") or "—").strip() or "—",
+                "flow_consumption": float(s.get("flow_consumption") or 0.0),
+                "managed_consumption": float(s.get("managed_consumption") or 0.0),
+                "net_consumption": float(s.get("net_consumption") or 0.0),
+                "service_fee": float(s.get("service_fee") or 0.0),
+                "fixed_service_fee": float(s.get("fixed_service_fee") or 0.0),
+                "coupon": float(s.get("coupon") or 0.0),
+                "dst": float(s.get("dst") or 0.0),
+                "total": float(s.get("total") or 0.0),
+            }
+
+            if record:
+                record.bill_type = payload["bill_type"]
+                record.service_type = payload["service_type"]
+                record.flow_consumption = payload["flow_consumption"]
+                record.managed_consumption = payload["managed_consumption"]
+                record.net_consumption = payload["net_consumption"]
+                record.service_fee = payload["service_fee"]
+                record.fixed_service_fee = payload["fixed_service_fee"]
+                record.coupon = payload["coupon"]
+                record.dst = payload["dst"]
+                record.total = payload["total"]
+            else:
+                db.add(
+                    ClientMonthlyDetailStats(
+                        month=month,
+                        client_name=client_name,
+                        **payload,
+                    )
+                )
+        db.commit()
+    finally:
+        if should_close:
+            db.close()
+
+
 def record_operation_audit(
     *,
     category: str,
@@ -379,6 +524,7 @@ def record_operation_audit(
 def list_operation_audit_logs(
     *,
     limit: int = 100,
+    offset: int = 0,
     actor: str | None = None,
     actor_like: str | None = None,
     category: str | None = None,
@@ -386,14 +532,15 @@ def list_operation_audit_logs(
     status: str | None = None,
     created_after: datetime | None = None,
     created_before: datetime | None = None,
-) -> list[dict[str, Any]]:
+) -> tuple[int, list[dict[str, Any]]]:
     """
     Read task history records ordered by newest first.
     """
     ensure_operation_audit_table()
     safe_limit = max(1, min(500, int(limit or 100)))
+    safe_offset = max(0, int(offset or 0))
     filters = []
-    params: dict[str, Any] = {"limit": safe_limit}
+    params: dict[str, Any] = {"limit": safe_limit, "offset": safe_offset}
 
     if actor:
         filters.append("actor = :actor")
@@ -418,24 +565,27 @@ def list_operation_audit_logs(
         params["created_before"] = created_before.strftime("%Y-%m-%d %H:%M:%S")
 
     where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
+    count_sql = text(f"SELECT COUNT(1) FROM operation_audit_logs {where_clause}")
     sql = text(
         f"""
         SELECT id, category, action, actor, status, input_file, output_file, result_ref, error_message, metadata_json, created_at
         FROM operation_audit_logs
         {where_clause}
         ORDER BY id DESC
-        LIMIT :limit
+        LIMIT :limit OFFSET :offset
         """
     )
+    total_count = 0
     try:
         with engine.connect() as conn:
+            total_count = conn.execute(count_sql, params).scalar() or 0
             rows = conn.execute(sql, params).mappings().all()
     except OperationalError as exc:
         logger.warning("list_operation_audit_logs skipped due to database operational error: %s", exc)
-        return []
+        return 0, []
     except Exception:
         logger.warning("list_operation_audit_logs failed", exc_info=True)
-        return []
+        return 0, []
 
     results: list[dict[str, Any]] = []
     for row in rows:
@@ -461,6 +611,6 @@ def list_operation_audit_logs(
                 "created_at": str(row.get("created_at") or ""),
             }
         )
-    return results
+    return total_count, results
 
 

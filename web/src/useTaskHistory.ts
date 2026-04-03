@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { OperationAuditLog } from './billingTypes'
 import { apiBlob, apiJson, isApiHttpError, parseDownloadFilename } from './apiClient'
 
@@ -11,7 +11,7 @@ interface UseTaskHistoryOptions {
   onNotify: (message: string, type: ToastType) => void
 }
 
-const DEFAULT_LIMIT = 100
+const DEFAULT_LIMIT = 500
 const DEFAULT_DAYS_FILTER = '30'
 
 const getApiErrorMessage = (error: unknown, fallback: string): string => {
@@ -47,8 +47,10 @@ export function useTaskHistory({ enabled, onUnauthorized, onForbidden, onNotify 
   }, [onNotify])
 
   const [items, setItems] = useState<OperationAuditLog[]>([])
+  const [totalCount, setTotalCount] = useState(0)
   const [loading, setLoading] = useState(false)
   const [limit, setLimit] = useState(DEFAULT_LIMIT)
+  const [currentPage, setCurrentPage] = useState(1)
   const [actorFilter, setActorFilter] = useState('')
   const [actionFilter, setActionFilter] = useState('all')
   const [statusFilter, setStatusFilter] = useState('all')
@@ -57,6 +59,7 @@ export function useTaskHistory({ enabled, onUnauthorized, onForbidden, onNotify 
   const buildParams = useCallback(() => {
     const params = new URLSearchParams()
     params.set('limit', String(limit))
+    params.set('offset', String((currentPage - 1) * limit))
     if (actorFilter.trim()) {
       params.set('actor', actorFilter.trim())
     }
@@ -70,7 +73,7 @@ export function useTaskHistory({ enabled, onUnauthorized, onForbidden, onNotify 
       params.set('days', daysFilter)
     }
     return params.toString()
-  }, [limit, actorFilter, actionFilter, statusFilter, daysFilter])
+  }, [limit, currentPage, actorFilter, actionFilter, statusFilter, daysFilter])
 
   const loadTaskHistory = useCallback(async (silent = false) => {
     if (!silent) {
@@ -78,10 +81,11 @@ export function useTaskHistory({ enabled, onUnauthorized, onForbidden, onNotify 
     }
     try {
       const query = buildParams()
-      const { data } = await apiJson<{ items?: OperationAuditLog[] }>(
+      const { data } = await apiJson<{ items?: OperationAuditLog[]; total?: number }>(
         `/api/task-history${query ? `?${query}` : ''}`,
       )
       setItems(data.items || [])
+      setTotalCount(data.total || 0)
     } catch (error: unknown) {
       if (isApiHttpError(error) && error.status === 401) {
         onUnauthorizedRef.current()
@@ -137,10 +141,18 @@ export function useTaskHistory({ enabled, onUnauthorized, onForbidden, onNotify 
 
   const toggleFailedOnly = useCallback(() => {
     setStatusFilter((prev) => (prev === 'failed' ? 'all' : 'failed'))
+    setCurrentPage(1)
   }, [])
+
+  // Reset to first page whenever filter changes
+  useEffect(() => {
+    setCurrentPage(1)
+  }, [actorFilter, actionFilter, statusFilter, daysFilter, limit])
 
   const reset = useCallback(() => {
     setItems([])
+    setTotalCount(0)
+    setCurrentPage(1)
     setActorFilter('')
     setActionFilter('all')
     setStatusFilter('all')
@@ -156,13 +168,16 @@ export function useTaskHistory({ enabled, onUnauthorized, onForbidden, onNotify 
 
   return {
     items,
+    totalCount,
     loading,
     limit,
+    currentPage,
     actorFilter,
     actionFilter,
     statusFilter,
     daysFilter,
     setLimit,
+    setCurrentPage,
     setActorFilter,
     setActionFilter,
     setStatusFilter,

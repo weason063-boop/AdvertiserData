@@ -58,6 +58,36 @@ def test_recalculate_requires_billing_run_permission(client):
     _clear_overrides()
 
 
+def test_estimate_calculate_requires_billing_run_permission(client):
+    _override_current_user_info(READONLY)
+    response = client.post(
+        "/api/estimate/calculate",
+        files={
+            "file": (
+                "estimate.xlsx",
+                b"dummy",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+    assert response.status_code == 403
+    _clear_overrides()
+
+
+def test_estimate_recalculate_requires_billing_run_permission(client):
+    _override_current_user_info(READONLY)
+    response = client.post("/api/estimate/recalculate")
+    assert response.status_code == 403
+    _clear_overrides()
+
+
+def test_estimate_latest_result_requires_billing_run_permission(client):
+    _override_current_user_info(READONLY)
+    response = client.get("/api/estimate/latest-result")
+    assert response.status_code == 403
+    _clear_overrides()
+
+
 def test_download_rejects_non_result_filename(client):
     _override_current_user_info(BILLING_USER)
     response = client.get("/api/download/.env")

@@ -1015,7 +1015,6 @@ export function Dashboard({ data, loading, onNotify: _onNotify, onRequireAuth }:
         <div className="dashboard-card-header">
           <div>
             <h3>{metric === 'consumption' ? '月度消耗趋势工作台' : '月度服务费趋势工作台'}</h3>
-            <p>保留窗口趋势，同时把当前分析月、上月、去年同月放到一个视图里同步判断。</p>
           </div>
         </div>
 
@@ -1087,7 +1086,6 @@ export function Dashboard({ data, loading, onNotify: _onNotify, onRequireAuth }:
         <div className="dashboard-card-header">
           <div>
             <h3>{currentMonthLabel || '当前月'} 月度客户工作台</h3>
-            <p>默认双基准并存，既看贡献，也能看环比和同比的结构变化。</p>
           </div>
         </div>
 
@@ -1314,7 +1312,6 @@ export function Dashboard({ data, loading, onNotify: _onNotify, onRequireAuth }:
         <div className="dashboard-card-header">
           <div>
             <h3>{currentQuarterLabel} 季度客户工作台</h3>
-            <p>默认双基准并存，既看贡献，也能看环比和同比的结构变化。</p>
           </div>
         </div>
 

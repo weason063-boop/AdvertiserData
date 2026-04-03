@@ -1,9 +1,13 @@
+
 import type { OperationAuditLog } from './billingTypes'
 
 const ACTION_LABELS: Record<string, string> = {
   upload_consumption: '上传消耗',
   calculate: '计算',
   recalculate: '重新计算',
+  upload_estimate_consumption: '上传预估模板',
+  estimate_calculate: '预估计算',
+  estimate_recalculate: '预估重算',
   download_result: '下载结果',
   upload_contract: '上传合同',
   sync_snapshot: '同步快照',
@@ -17,6 +21,9 @@ const ACTION_OPTIONS = [
   { value: 'upload_consumption', label: '上传消耗' },
   { value: 'calculate', label: '计算' },
   { value: 'recalculate', label: '重新计算' },
+  { value: 'upload_estimate_consumption', label: '上传预估模板' },
+  { value: 'estimate_calculate', label: '预估计算' },
+  { value: 'estimate_recalculate', label: '预估重算' },
   { value: 'download_result', label: '下载结果' },
   { value: 'upload_contract', label: '上传合同' },
   { value: 'sync_snapshot', label: '同步快照' },
@@ -53,6 +60,9 @@ interface TaskHistoryPanelProps {
   onActionFilterChange: (next: string) => void
   onStatusFilterChange: (next: string) => void
   onDaysFilterChange: (next: string) => void
+  totalCount: number
+  currentPage: number
+  onCurrentPageChange: (next: number) => void
   onToggleFailedOnly: () => void
   onRefresh: () => void
   onExport: () => void
@@ -101,10 +111,15 @@ export function TaskHistoryPanel({
   onActionFilterChange,
   onStatusFilterChange,
   onDaysFilterChange,
+  totalCount,
+  currentPage,
+  onCurrentPageChange,
   onToggleFailedOnly,
   onRefresh,
   onExport,
 }: TaskHistoryPanelProps) {
+  const totalPages = Math.ceil(totalCount / limit)
+
   if (!active) return null
 
   return (
@@ -165,6 +180,7 @@ export function TaskHistoryPanel({
           <label className="task-history-field task-history-select">
             <span className="task-history-field-label">条数</span>
             <select value={limit} onChange={(e) => onLimitChange(Number(e.target.value))}>
+              <option value={20}>20</option>
               <option value={50}>50</option>
               <option value={100}>100</option>
               <option value={200}>200</option>
@@ -227,6 +243,33 @@ export function TaskHistoryPanel({
               ))}
             </tbody>
           </table>
+          {items.length > 0 && (
+              <div className="table-pagination">
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span className="table-pagination-info">当前显示每页 {limit} 项记录</span>
+                </div>
+                
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <button
+                    type="button"
+                    disabled={currentPage === 1}
+                    onClick={() => onCurrentPageChange(Math.max(1, currentPage - 1))}
+                  >
+                    上一页
+                  </button>
+                  <span className="table-pagination-info" style={{ margin: '0 8px' }}>
+                    第 {currentPage} 页 / 共 {Math.max(1, totalPages)} 页
+                  </span>
+                  <button
+                    type="button"
+                    disabled={currentPage >= Math.max(1, totalPages)}
+                    onClick={() => onCurrentPageChange(Math.min(Math.max(1, totalPages), currentPage + 1))}
+                  >
+                    下一页
+                  </button>
+                </div>
+              </div>
+            )}
         </div>
       )}
     </div>

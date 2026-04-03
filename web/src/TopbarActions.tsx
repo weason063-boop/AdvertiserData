@@ -13,6 +13,7 @@ interface TopbarActionsProps {
   showLoginButton: boolean
   showClientsActions: boolean
   showResultsActions: boolean
+  showEstimateResultsActions: boolean
   search: string
   onSearchChange: (value: string) => void
   onSearchKeyPress: KeyboardEventHandler<HTMLInputElement>
@@ -22,13 +23,17 @@ interface TopbarActionsProps {
   loading: boolean
   isAddingClient: boolean
   hasResults: boolean
+  hasEstimateResults: boolean
   onOpenLogin: () => void
   onAddClient: () => void
   onSyncFeishu: () => void
   onUploadContract: (event: ChangeEvent<HTMLInputElement>) => void
   onUploadConsumption: (event: ChangeEvent<HTMLInputElement>) => void
+  onUploadEstimateConsumption: (event: ChangeEvent<HTMLInputElement>) => void
   onRecalculate: () => void
+  onRecalculateEstimate: () => void
   onDownloadResult: () => void
+  onDownloadEstimateResult: () => void
 }
 
 export function TopbarActions({
@@ -36,6 +41,7 @@ export function TopbarActions({
   showLoginButton,
   showClientsActions,
   showResultsActions,
+  showEstimateResultsActions,
   search,
   onSearchChange,
   onSearchKeyPress,
@@ -45,13 +51,17 @@ export function TopbarActions({
   loading,
   isAddingClient,
   hasResults,
+  hasEstimateResults,
   onOpenLogin,
   onAddClient,
   onSyncFeishu,
   onUploadContract,
   onUploadConsumption,
+  onUploadEstimateConsumption,
   onRecalculate,
+  onRecalculateEstimate,
   onDownloadResult,
+  onDownloadEstimateResult,
 }: TopbarActionsProps) {
   return (
     <div className="topbar">
@@ -131,6 +141,35 @@ export function TopbarActions({
               <button className="btn-action secondary" onClick={onDownloadResult}>
                 <Download size={16} />
                 下载 Excel
+              </button>
+            )}
+          </>
+        )}
+
+        {showEstimateResultsActions && (
+          <>
+            {canBillingRun && (
+              <label className="btn-action primary">
+                <Upload size={16} />
+                上传预估模板
+                <input
+                  type="file"
+                  accept=".xlsx,.xls"
+                  onChange={onUploadEstimateConsumption}
+                  hidden
+                />
+              </label>
+            )}
+            {canBillingRun && (
+              <button className="btn-action secondary" onClick={onRecalculateEstimate} disabled={loading}>
+                <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
+                重新计算预估
+              </button>
+            )}
+            {hasEstimateResults && (
+              <button className="btn-action secondary" onClick={onDownloadEstimateResult}>
+                <Download size={16} />
+                下载预估 Excel
               </button>
             )}
           </>

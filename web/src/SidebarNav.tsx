@@ -1,6 +1,14 @@
-import { FileClock, FileText, LayoutDashboard, TrendingUp, Users } from 'lucide-react'
+import { BookOpen, FileClock, FileText, LayoutDashboard, TrendingUp, Users } from 'lucide-react'
 
-type Tab = 'dashboard' | 'clients' | 'results' | 'rates' | 'taskHistory'
+type Tab =
+  | 'dashboard'
+  | 'clientLedger'
+  | 'clientDetail'
+  | 'clients'
+  | 'results'
+  | 'estimateResults'
+  | 'rates'
+  | 'taskHistory'
 
 interface SidebarNavProps {
   activeTab: Tab
@@ -23,6 +31,13 @@ export function SidebarNav({
         <span>数据看板</span>
       </button>
       <button
+        className={`nav-item ${activeTab === 'clientLedger' || activeTab === 'clientDetail' ? 'active' : ''}`}
+        onClick={() => onSwitchTab('clientLedger')}
+      >
+        <BookOpen size={18} />
+        <span>客户明细</span>
+      </button>
+      <button
         className={`nav-item ${activeTab === 'rates' ? 'active' : ''}`}
         onClick={() => onSwitchTab('rates')}
       >
@@ -42,6 +57,13 @@ export function SidebarNav({
       >
         <FileText size={18} />
         <span>账单明细</span>
+      </button>
+      <button
+        className={`nav-item ${activeTab === 'estimateResults' ? 'active' : ''}`}
+        onClick={() => onSwitchTab('estimateResults')}
+      >
+        <FileText size={18} />
+        <span>预估消耗</span>
       </button>
       {canViewTaskHistory && (
         <button

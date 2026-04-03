@@ -63,6 +63,45 @@ class ClientMonthlyStats(Base):
         Index('ix_client_monthly_stats_month_consumption', 'month', 'consumption'),
     )
 
+
+class ClientMonthlyDetailStats(Base):
+    __tablename__ = "client_monthly_detail_stats"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    month = Column(String, nullable=False)
+    client_name = Column(String, nullable=False)
+    bill_type = Column(String, default="—")
+    service_type = Column(String, default="—")
+    flow_consumption = Column(Float, default=0.0)
+    managed_consumption = Column(Float, default=0.0)
+    net_consumption = Column(Float, default=0.0)
+    service_fee = Column(Float, default=0.0)
+    fixed_service_fee = Column(Float, default=0.0)
+    coupon = Column(Float, default=0.0)
+    dst = Column(Float, default=0.0)
+    total = Column(Float, default=0.0)
+
+    __table_args__ = (
+        UniqueConstraint('month', 'client_name', name='_month_client_detail_uc'),
+        Index('ix_client_monthly_detail_stats_client_month', 'client_name', 'month'),
+        Index('ix_client_monthly_detail_stats_month_total', 'month', 'total'),
+    )
+
+
+class ClientMonthlyNote(Base):
+    __tablename__ = "client_monthly_notes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    month = Column(String, nullable=False)
+    client_name = Column(String, nullable=False)
+    note = Column(String)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint('month', 'client_name', name='_month_client_note_uc'),
+        Index('ix_client_monthly_notes_client_month', 'client_name', 'month'),
+    )
+
 class User(Base):
     __tablename__ = "users"
     

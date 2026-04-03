@@ -1,5 +1,6 @@
 ﻿from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from api.database import get_db, record_operation_audit
 from api.auth import PERMISSION_BILLING_RUN, get_current_user, require_permission
@@ -11,10 +12,43 @@ service = DashboardService()
 report_service = DashboardReportService()
 
 
+class UpdateLatestMonthClientNoteRequest(BaseModel):
+    month: str
+    client_name: str
+    note: str | None = None
+
+
 @router.get("")
 def get_dashboard_data(db: Session = Depends(get_db), current_user: str = Depends(get_current_user)):
     """获取看板统计数据"""
     return service.get_main_stats(db)
+
+
+@router.get("/latest-month/clients")
+def get_latest_month_clients(
+    db: Session = Depends(get_db),
+    current_user: str = Depends(get_current_user),
+):
+    """获取最新月份客户列表"""
+    return service.get_latest_month_clients(db)
+
+
+@router.put("/latest-month/client-note")
+def update_latest_month_client_note(
+    request: UpdateLatestMonthClientNoteRequest,
+    db: Session = Depends(get_db),
+    current_user: str = Depends(get_current_user),
+):
+    """更新账单明细页客户备注"""
+    try:
+        return service.update_client_month_note(
+            month=request.month,
+            client_name=request.client_name,
+            note=request.note,
+            db=db,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @router.get("/export/report.xlsx")
@@ -85,6 +119,19 @@ def get_client_trend_data(
     """获取指定客户的月度消耗趋势"""
     try:
         return service.get_client_trend(client_name, db)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/client/{client_name}/history")
+def get_client_history_data(
+    client_name: str,
+    db: Session = Depends(get_db),
+    current_user: str = Depends(get_current_user),
+):
+    """获取指定客户的完整历史账本"""
+    try:
+        return service.get_client_history(client_name, db)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

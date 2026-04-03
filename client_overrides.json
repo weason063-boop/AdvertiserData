@@ -27,13 +27,6 @@
             "description": "排除 Facebook 媒介（只计算 Google 代投）",
             "excluded_media": ["Facebook"]
         },
-        "Acmer": {
-            "action": "media_rate",
-            "description": "Google 流水收 2%",
-            "media": "Google",
-            "service_type": "流水",
-            "rate": 0.02
-        },
         "上海Liene": {
             "action": "fixed_rate",
             "description": "本月免收固定服务费（保留 10% 点位）",

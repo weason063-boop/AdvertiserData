@@ -272,7 +272,7 @@ export function ExchangeRates() {
               <HandCoins size={20} />
             </div>
             <div>
-              <h3 style={{ margin: 0, fontSize: '1.1rem', color: '#0f172a' }}>恒生银行 (Hang Seng) - 日快照维护</h3>
+              <h3 className="fx-section-title">恒生银行 (Hang Seng) - 日快照维护</h3>
               <div style={{ fontSize: '0.85rem', color: '#64748b', marginTop: '2px' }}>在此录入并维护恒生银行的外汇牌价快照数据</div>
             </div>
           </div>
@@ -340,7 +340,7 @@ export function ExchangeRates() {
               <TrendingUp size={20} />
             </div>
             <div>
-              <h3 style={{ margin: 0, fontSize: '1.1rem', color: '#0f172a' }}>中国外汇交易中心 (CFETS)</h3>
+              <h3 className="fx-section-title">中国外汇交易中心 (CFETS)</h3>
               <div style={{ fontSize: '0.85rem', color: '#64748b', marginTop: '2px' }}>中国人民银行授权公布的人民币汇率中间价</div>
             </div>
           </div>

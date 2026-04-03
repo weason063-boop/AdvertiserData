@@ -24,14 +24,25 @@ import {
   type UserPermission,
 } from './userManagement'
 
-type Tab = 'dashboard' | 'clients' | 'results' | 'rates' | 'taskHistory'
+type Tab =
+  | 'dashboard'
+  | 'clientLedger'
+  | 'clientDetail'
+  | 'clients'
+  | 'results'
+  | 'estimateResults'
+  | 'rates'
+  | 'taskHistory'
 
 const ACTIVE_TAB_STORAGE_KEY = 'billing_active_tab'
 
 const isTab = (value: string | null): value is Tab =>
   value === 'dashboard' ||
+  value === 'clientLedger' ||
+  value === 'clientDetail' ||
   value === 'clients' ||
   value === 'results' ||
+  value === 'estimateResults' ||
   value === 'rates' ||
   value === 'taskHistory'
 
@@ -58,12 +69,19 @@ function App() {
   const [resultDownloadUrl, setResultDownloadUrl] = useState('')
   const [resultsPage, setResultsPage] = useState(1)
   const [resultsPageSize, setResultsPageSize] = useState(100)
+  const [estimateResults, setEstimateResults] = useState<CalculationResult | null>(null)
+  const [estimateResultFile, setEstimateResultFile] = useState('')
+  const [, setEstimateResultDataUrl] = useState('')
+  const [estimateResultDownloadUrl, setEstimateResultDownloadUrl] = useState('')
+  const [estimateResultsPage, setEstimateResultsPage] = useState(1)
+  const [estimateResultsPageSize, setEstimateResultsPageSize] = useState(100)
 
   const [dashboardData, setDashboardData] = useState<{ stats: any; trend: any[]; top_clients?: any[] }>({
     stats: null,
     trend: [],
   })
   const [isDashboardStale, setIsDashboardStale] = useState(false)
+  const [selectedClientName, setSelectedClientName] = useState<string | null>(null)
 
   // Toast state
   const [toastMessage, setToastMessage] = useState('')
@@ -122,6 +140,13 @@ function App() {
     const start = (resultsPage - 1) * resultsPageSize
     return deferredResultsData.slice(start, start + resultsPageSize)
   }, [deferredResultsData, resultsPage, resultsPageSize])
+  const deferredEstimateResultsData = useDeferredValue(estimateResults?.data ?? [])
+  const estimateResultsTotalRows = deferredEstimateResultsData.length
+  const estimateResultsTotalPages = Math.max(1, Math.ceil(estimateResultsTotalRows / estimateResultsPageSize))
+  const pagedEstimateResultsData = useMemo(() => {
+    const start = (estimateResultsPage - 1) * estimateResultsPageSize
+    return deferredEstimateResultsData.slice(start, start + estimateResultsPageSize)
+  }, [deferredEstimateResultsData, estimateResultsPage, estimateResultsPageSize])
   const filteredManagedUsers = useMemo(() => {
     const keyword = userSearchKeyword.trim().toLowerCase()
     if (!keyword) return managedUsers
@@ -195,10 +220,16 @@ function App() {
     setResultFile('')
     setResultDataUrl('')
     setResultDownloadUrl('')
+    setEstimateResults(null)
+    setEstimateResultFile('')
+    setEstimateResultDataUrl('')
+    setEstimateResultDownloadUrl('')
     taskHistory.reset()
     setDashboardData({ stats: null, trend: [] })
+    setIsDashboardStale(false)
     setIsAddingClient(false)
     setEditingClient(null)
+    setSelectedClientName(null)
     setSearch('')
     setActiveTab('dashboard')
     window.localStorage.removeItem(ACTIVE_TAB_STORAGE_KEY)
@@ -317,6 +348,49 @@ function App() {
       console.error('Failed to load latest result', error)
     }
   }
+  const loadLatestEstimateResult = async () => {
+    try {
+      const { data } = await apiJson<{
+        has_result?: boolean
+        filename?: string
+        output_file?: string
+        data_url?: string
+        download_url?: string
+      }>('/api/estimate/latest-result')
+      if (data.has_result) {
+        const latestFilename = String(data.filename || data.output_file || '')
+        const latestDataUrl = String(data.data_url || '')
+        const latestDownloadUrl = String(data.download_url || '')
+        setEstimateResultFile(latestFilename)
+        setEstimateResultDataUrl(latestDataUrl)
+        setEstimateResultDownloadUrl(latestDownloadUrl)
+        if (!latestDataUrl) {
+          throw new Error('预估结果地址缺失')
+        }
+        const { data: resultData } = await apiJson<CalculationResult>(latestDataUrl)
+        setEstimateResults(resultData)
+        setEstimateResultsPage(1)
+      } else {
+        setEstimateResults(null)
+        setEstimateResultFile('')
+        setEstimateResultDataUrl('')
+        setEstimateResultDownloadUrl('')
+      }
+    } catch (error: unknown) {
+      if (isApiHttpError(error) && error.status === 401) {
+        handleUnauthorized()
+        return
+      }
+      if (isApiHttpError(error) && error.status === 403) {
+        setEstimateResults(null)
+        setEstimateResultFile('')
+        setEstimateResultDataUrl('')
+        setEstimateResultDownloadUrl('')
+        return
+      }
+      console.error('Failed to load latest estimate result', error)
+    }
+  }
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -327,6 +401,7 @@ function App() {
     loadClients()
     loadDashboard()
     loadLatestResult()
+    loadLatestEstimateResult()
   }, [isAuthenticated])
 
   useEffect(() => {
@@ -342,13 +417,18 @@ function App() {
     setToastType('error')
   }, [activeTab, currentRole, isAuthenticated, results])
 
-  // Delayed Dashboard refresh: only when switching to dashboard tab
   useEffect(() => {
     if (isAuthenticated && activeTab === 'dashboard' && isDashboardStale) {
       loadDashboard()
       setIsDashboardStale(false)
     }
   }, [activeTab, isDashboardStale, isAuthenticated])
+
+  useEffect(() => {
+    if (activeTab === 'clientDetail' && !selectedClientName) {
+      setActiveTab('clientLedger')
+    }
+  }, [activeTab, selectedClientName])
 
   // Auto-hide sync result after 5 seconds
   useEffect(() => {
@@ -390,6 +470,12 @@ function App() {
       setResultsPage(resultsTotalPages)
     }
   }, [resultsPage, resultsTotalPages])
+
+  useEffect(() => {
+    if (estimateResultsPage > estimateResultsTotalPages) {
+      setEstimateResultsPage(estimateResultsTotalPages)
+    }
+  }, [estimateResultsPage, estimateResultsTotalPages])
 
   useEffect(() => {
     if (userListPage > userListTotalPages) {
@@ -531,6 +617,68 @@ function App() {
         return
       }
       setToastMessage(`计算失败: ${getApiErrorMessage(error, '未知错误')}`)
+      setToastType('error')
+    } finally {
+      setLoading(false)
+      e.target.value = ''
+    }
+  }
+
+  const handleEstimateCalculate = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!(currentRole === 'admin' || currentRole === 'super_admin' || currentPermissions.includes('billing_run'))) {
+      setToastMessage('\u5f53\u524d\u8d26\u53f7\u6ca1\u6709 billing_run \u6743\u9650')
+      setToastType('error')
+      e.target.value = ''
+      return
+    }
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    setLoading(true)
+    const formData = new FormData()
+    formData.append('file', file)
+
+    try {
+      setToastMessage('\u6b63\u5728\u4e0a\u4f20\u5e76\u8ba1\u7b97\u9884\u4f30...')
+      setToastType('info')
+
+      const { data: result } = await apiJson<{
+        output_file?: string
+        filename?: string
+        data_url?: string
+        download_url?: string
+      }>('/api/estimate/calculate', {
+        method: 'POST',
+        body: formData,
+      })
+
+      if (result.data_url) {
+        const nextFile = String(result.output_file || result.filename || '')
+        const nextDataUrl = String(result.data_url || '')
+        const nextDownloadUrl = String(result.download_url || '')
+        setEstimateResultFile(nextFile)
+        setEstimateResultDataUrl(nextDataUrl)
+        setEstimateResultDownloadUrl(nextDownloadUrl)
+        setEstimateResultsPage(1)
+
+        const { data: resultData } = await apiJson<CalculationResult>(nextDataUrl)
+        setEstimateResults(resultData)
+        startTransition(() => {
+          setActiveTab('estimateResults')
+        })
+
+        setToastMessage('\u9884\u4f30\u8ba1\u7b97\u5b8c\u6210')
+        setToastType('success')
+      } else {
+        setToastMessage('\u9884\u4f30\u8ba1\u7b97\u5931\u8d25: \u540e\u7aef\u672a\u8fd4\u56de\u7ed3\u679c\u5730\u5740')
+        setToastType('error')
+      }
+    } catch (error: unknown) {
+      if (isApiHttpError(error) && error.status === 401) {
+        handleUnauthorized()
+        return
+      }
+      setToastMessage(`\u9884\u4f30\u8ba1\u7b97\u5931\u8d25: ${getApiErrorMessage(error, '\u672a\u77e5\u9519\u8bef')}`)
       setToastType('error')
     } finally {
       setLoading(false)
@@ -693,6 +841,58 @@ function App() {
       setLoading(false)
     }
   }
+
+  const handleEstimateRecalculate = async () => {
+    if (!(currentRole === 'admin' || currentRole === 'super_admin' || currentPermissions.includes('billing_run'))) {
+      setToastMessage('\u5f53\u524d\u8d26\u53f7\u6ca1\u6709 billing_run \u6743\u9650')
+      setToastType('error')
+      return
+    }
+    setLoading(true)
+    try {
+      setToastMessage('\u6b63\u5728\u57fa\u4e8e\u6700\u8fd1\u4e0a\u4f20\u6a21\u677f\u91cd\u65b0\u8ba1\u7b97\u9884\u4f30...')
+      setToastType('info')
+
+      const { data: result } = await apiJson<{
+        output_file?: string
+        filename?: string
+        data_url?: string
+        download_url?: string
+      }>('/api/estimate/recalculate', {
+        method: 'POST',
+      })
+      if (result.data_url) {
+        const nextFile = String(result.output_file || result.filename || '')
+        const nextDataUrl = String(result.data_url || '')
+        const nextDownloadUrl = String(result.download_url || '')
+        setEstimateResultFile(nextFile)
+        setEstimateResultDataUrl(nextDataUrl)
+        setEstimateResultDownloadUrl(nextDownloadUrl)
+        setEstimateResultsPage(1)
+
+        const { data: resultData } = await apiJson<CalculationResult>(nextDataUrl)
+        setEstimateResults(resultData)
+        startTransition(() => {
+          setActiveTab('estimateResults')
+        })
+
+        setToastMessage('\u9884\u4f30\u5df2\u91cd\u65b0\u8ba1\u7b97\u5b8c\u6210')
+        setToastType('success')
+      } else {
+        setToastMessage('\u9884\u4f30\u91cd\u65b0\u8ba1\u7b97\u5931\u8d25: \u540e\u7aef\u672a\u8fd4\u56de\u7ed3\u679c\u5730\u5740')
+        setToastType('error')
+      }
+    } catch (error: unknown) {
+      if (isApiHttpError(error) && error.status === 401) {
+        handleUnauthorized()
+        return
+      }
+      setToastMessage(`\u9884\u4f30\u91cd\u65b0\u8ba1\u7b97\u5931\u8d25: ${getApiErrorMessage(error, '\u672a\u77e5\u9519\u8bef')}`)
+      setToastType('error')
+    } finally {
+      setLoading(false)
+    }
+  }
   const openUserManager = async () => {
     setShowSettingsMenu(false)
     setUserSearchKeyword('')
@@ -796,6 +996,29 @@ function App() {
     }
   }
 
+  const downloadEstimateResult = async () => {
+    if (!estimateResultDownloadUrl && !estimateResultFile) return
+    try {
+      const downloadPath = estimateResultDownloadUrl || `/api/download/${encodeURIComponent(estimateResultFile)}`
+      const { blob } = await apiBlob(downloadPath)
+      const url = window.URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = estimateResultFile || 'estimate_result.xlsx'
+      document.body.appendChild(anchor)
+      anchor.click()
+      anchor.remove()
+      window.URL.revokeObjectURL(url)
+    } catch (error: unknown) {
+      if (isApiHttpError(error) && error.status === 401) {
+        handleUnauthorized()
+        return
+      }
+      setToastMessage(`\u4e0b\u8f7d\u9884\u4f30\u7ed3\u679c\u5931\u8d25: ${getApiErrorMessage(error, '\u672a\u77e5\u9519\u8bef')}`)
+      setToastType('error')
+    }
+  }
+
   const hasPermission = (permission: UserPermission): boolean => {
     if (currentRole === 'admin' || currentRole === 'super_admin') return true
     return currentPermissions.includes(permission)
@@ -806,6 +1029,13 @@ function App() {
   const canViewTaskHistory = isAdminRole(currentRole)
   const canManageAccounts = currentRole === 'super_admin'
   const userDisplay = currentUser || 'admin'
+  const openClientDetail = (clientName: string) => {
+    setSelectedClientName(clientName)
+    setActiveTab('clientDetail')
+  }
+  const closeClientDetail = () => {
+    setActiveTab('clientLedger')
+  }
   const workspaceDisplay = '账单工作空间'
 
   return (
@@ -847,13 +1077,17 @@ function App() {
         loading={loading}
         isAddingClient={isAddingClient}
         hasResults={Boolean(results)}
+        hasEstimateResults={Boolean(estimateResults)}
         onOpenLogin={() => setShowLoginModal(true)}
         onAddClient={() => handleAction(() => setIsAddingClient(true))}
         onSyncFeishu={() => handleAction(handleSyncFeishu)}
         onUploadContract={(e) => handleAction(() => handleUploadContract(e))}
         onUploadConsumption={(e) => handleAction(() => handleCalculate(e))}
+        onUploadEstimateConsumption={(e) => handleAction(() => handleEstimateCalculate(e))}
         onRecalculate={() => handleAction(handleRecalculate)}
+        onRecalculateEstimate={() => handleAction(handleEstimateRecalculate)}
         onDownloadResult={downloadResult}
+        onDownloadEstimateResult={downloadEstimateResult}
         dashboardData={dashboardData}
         onNotify={(message, type) => {
           setToastMessage(message)
@@ -863,6 +1097,9 @@ function App() {
           handleLogout()
           setShowLoginModal(true)
         }}
+        selectedClientName={selectedClientName}
+        onOpenClientDetail={openClientDetail}
+        onCloseClientDetail={closeClientDetail}
         syncResult={syncResult}
         clients={clients}
         editingClient={editingClient}
@@ -887,15 +1124,30 @@ function App() {
         }}
         onPrevResultsPage={() => setResultsPage((p) => Math.max(1, p - 1))}
         onNextResultsPage={() => setResultsPage((p) => Math.min(resultsTotalPages, p + 1))}
+        estimateResults={estimateResults}
+        pagedEstimateResultsData={pagedEstimateResultsData}
+        estimateResultsTotalRows={estimateResultsTotalRows}
+        estimateResultsPage={estimateResultsPage}
+        estimateResultsTotalPages={estimateResultsTotalPages}
+        estimateResultsPageSize={estimateResultsPageSize}
+        onEstimateResultsPageSizeChange={(size) => {
+          setEstimateResultsPageSize(size)
+          setEstimateResultsPage(1)
+        }}
+        onPrevEstimateResultsPage={() => setEstimateResultsPage((p) => Math.max(1, p - 1))}
+        onNextEstimateResultsPage={() => setEstimateResultsPage((p) => Math.min(estimateResultsTotalPages, p + 1))}
         formatNumber={formatNumber}
         taskHistoryItems={taskHistory.items}
         taskHistoryLoading={taskHistory.loading}
         taskHistoryLimit={taskHistory.limit}
+        taskHistoryCurrentPage={taskHistory.currentPage}
+        taskHistoryTotalCount={taskHistory.totalCount}
         taskHistoryActorFilter={taskHistory.actorFilter}
         taskHistoryActionFilter={taskHistory.actionFilter}
         taskHistoryStatusFilter={taskHistory.statusFilter}
         taskHistoryDaysFilter={taskHistory.daysFilter}
         onTaskHistoryLimitChange={taskHistory.setLimit}
+        onTaskHistoryCurrentPageChange={taskHistory.setCurrentPage}
         onTaskHistoryActorFilterChange={taskHistory.setActorFilter}
         onTaskHistoryActionFilterChange={taskHistory.setActionFilter}
         onTaskHistoryStatusFilterChange={taskHistory.setStatusFilter}

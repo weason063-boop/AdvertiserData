@@ -48,9 +48,50 @@ def recalculate_fees(current_user: dict = Depends(require_permission(PERMISSION_
         raise HTTPException(status_code=500, detail=f"重算失败: {exc}")
 
 
+@router.post("/estimate/calculate")
+async def calculate_estimate_fees(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(require_permission(PERMISSION_BILLING_RUN)),
+):
+    try:
+        owner_username = str(current_user.get("username") or "")
+        file_path = await service.save_uploaded_estimate_file(file, owner_username=owner_username)
+        return service.process_estimate_local_file(
+            file_path,
+            file.filename or "",
+            owner_username=owner_username,
+            operation="estimate_calculate",
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"预估计算失败: {exc}")
+
+
+@router.post("/estimate/recalculate")
+def recalculate_estimate_fees(current_user: dict = Depends(require_permission(PERMISSION_BILLING_RUN))):
+    try:
+        return service.recalculate_latest_estimate(owner_username=str(current_user.get("username") or ""))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"预估重算失败: {exc}")
+
+
 @router.get("/latest-result")
 def get_latest_result(current_user: dict = Depends(require_permission(PERMISSION_BILLING_RUN))):
-    return service.get_latest_result_info_for_user(owner_username=str(current_user.get("username") or ""))
+    return service.get_latest_result_info_for_user(
+        owner_username=str(current_user.get("username") or ""),
+        operations={"calculate", "recalculate"},
+    )
+
+
+@router.get("/estimate/latest-result")
+def get_latest_estimate_result(current_user: dict = Depends(require_permission(PERMISSION_BILLING_RUN))):
+    return service.get_latest_result_info_for_user(
+        owner_username=str(current_user.get("username") or ""),
+        operations={"estimate_calculate", "estimate_recalculate"},
+    )
 
 
 @router.get("/results/{result_id}")
@@ -81,7 +122,8 @@ async def upload_contract(
 
 @router.get("/task-history")
 def get_task_history(
-    limit: int = Query(default=100, ge=1, le=500),
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     actor: str | None = Query(default=None),
     category: str | None = Query(default=None),
     action: str | None = Query(default=None),
@@ -92,8 +134,9 @@ def get_task_history(
     created_after = None
     if days is not None:
         created_after = datetime.now(timezone.utc) - timedelta(days=days)
-    items = list_operation_audit_logs(
+    total_count, items = list_operation_audit_logs(
         limit=limit,
+        offset=offset,
         actor=None,
         actor_like=(actor or None),
         category=(category or None),
@@ -101,7 +144,7 @@ def get_task_history(
         status=(status or None),
         created_after=created_after,
     )
-    return {"items": items, "count": len(items)}
+    return {"items": items, "count": len(items), "total": total_count}
 
 
 @router.get("/task-history/export")
@@ -118,8 +161,9 @@ def export_task_history(
     if days is not None:
         created_after = datetime.now(timezone.utc) - timedelta(days=days)
 
-    items = list_operation_audit_logs(
+    _, items = list_operation_audit_logs(
         limit=limit,
+        offset=0,
         actor=None,
         actor_like=(actor or None),
         category=(category or None),

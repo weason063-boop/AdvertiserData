@@ -20,6 +20,8 @@ from api.auth import (
     verify_password,
 )
 from api.database import (
+    ensure_client_monthly_detail_stats_table,
+    ensure_client_monthly_notes_table,
     SessionLocal,
     ensure_dashboard_indexes,
     ensure_operation_audit_table,
@@ -46,6 +48,8 @@ async def lifespan(app: FastAPI):
     try:
         ensure_user_permissions_column()
         ensure_dashboard_indexes()
+        ensure_client_monthly_detail_stats_table()
+        ensure_client_monthly_notes_table()
         ensure_operation_audit_table()
         super_admin = db.query(User).filter(User.role == "super_admin").first()
         if not super_admin:

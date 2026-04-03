@@ -3,16 +3,23 @@ from dateutil.relativedelta import relativedelta
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc
 from typing import Dict, List
+import os
 import re
+import threading
 
 from api.database import get_top_clients, SessionLocal
-from api.models import BillingHistory, ClientMonthlyStats
+from api.models import BillingHistory, Client, ClientMonthlyDetailStats, ClientMonthlyNote, ClientMonthlyStats
+from api.services.calculation_service import CalculationService
 
 class DashboardService:
     _MONTH_PATTERN = re.compile(r"^(20\d{2})-(0[1-9]|1[0-2])$")
 
     def _is_valid_month(self, month: str | None) -> bool:
         return bool(month and self._MONTH_PATTERN.match(month))
+
+    def __init__(self, calculation_service: CalculationService | None = None):
+        self._calculation_service = calculation_service or CalculationService()
+        self._detail_sync_lock = threading.Lock()
 
     def _get_previous_month(self, month: str) -> str | None:
         """Return previous month in YYYY-MM format."""
@@ -27,6 +34,184 @@ class DashboardService:
         months = [r[0] for r in rows if r and self._is_valid_month(r[0])]
         months.sort()
         return months
+
+    def _get_available_detail_months(self, db: Session) -> List[str]:
+        rows = db.query(ClientMonthlyDetailStats.month).distinct().all()
+        months = [r[0] for r in rows if r and self._is_valid_month(r[0])]
+        months.sort()
+        return months
+
+    def _ensure_detail_stats_synced(self, db: Session) -> None:
+        if os.getenv("TESTING") == "True":
+            return
+        with self._detail_sync_lock:
+            self._calculation_service.backfill_detail_stats_from_results(db=db)
+
+    def _serialize_detail_metrics(self, record: ClientMonthlyDetailStats) -> Dict:
+        flow_consumption = float(record.flow_consumption or 0.0)
+        managed_consumption = float(record.managed_consumption or 0.0)
+        variable_service_fee = float(record.service_fee or 0.0)
+        fixed_service_fee = float(record.fixed_service_fee or 0.0)
+        net_consumption = float(record.net_consumption or 0.0)
+        coupon = float(record.coupon or 0.0)
+        dst = float(record.dst or 0.0)
+        total = float(record.total or 0.0)
+        return {
+            "bill_type": str(record.bill_type or "—").strip() or "—",
+            "service_type": str(record.service_type or "—").strip() or "—",
+            "flow_consumption": flow_consumption,
+            "managed_consumption": managed_consumption,
+            "net_consumption": net_consumption,
+            "service_fee": variable_service_fee,
+            "fixed_service_fee": fixed_service_fee,
+            "coupon": coupon,
+            "dst": dst,
+            "total": total,
+            "consumption": flow_consumption + managed_consumption,
+            "service_fee_total": variable_service_fee + fixed_service_fee,
+        }
+
+    def _build_fallback_detail_metrics(self, consumption: float, service_fee_total: float) -> Dict:
+        consumption_value = float(consumption or 0.0)
+        fee_value = float(service_fee_total or 0.0)
+        return {
+            "bill_type": "—",
+            "service_type": "—",
+            "flow_consumption": 0.0,
+            "managed_consumption": consumption_value,
+            "net_consumption": consumption_value,
+            "service_fee": fee_value,
+            "fixed_service_fee": 0.0,
+            "coupon": 0.0,
+            "dst": 0.0,
+            "total": consumption_value + fee_value,
+            "consumption": consumption_value,
+            "service_fee_total": fee_value,
+        }
+
+    def _build_client_meta_map(self, db: Session, client_names: List[str]) -> Dict[str, Dict[str, str | None]]:
+        normalized_names = sorted({str(name or "").strip() for name in client_names if str(name or "").strip()})
+        if not normalized_names:
+            return {}
+
+        rows = db.query(
+            Client.name,
+            Client.entity,
+            Client.department,
+        ).filter(
+            Client.name.in_(normalized_names)
+        ).all()
+
+        meta_map: Dict[str, Dict[str, str | None]] = {}
+        for row in rows:
+            name = str(getattr(row, "name", "") or "").strip()
+            if not name:
+                continue
+            entity = str(getattr(row, "entity", "") or "").strip() or None
+            owner = str(getattr(row, "department", "") or "").strip() or None
+            meta_map[name] = {
+                "entity": entity,
+                "owner": owner,
+            }
+        return meta_map
+
+    def _build_note_map(self, db: Session, month: str, client_names: List[str]) -> Dict[str, str]:
+        normalized_names = sorted({str(name or "").strip() for name in client_names if str(name or "").strip()})
+        if not normalized_names or not self._is_valid_month(month):
+            return {}
+
+        rows = db.query(
+            ClientMonthlyNote.client_name,
+            ClientMonthlyNote.note,
+        ).filter(
+            ClientMonthlyNote.month == month,
+            ClientMonthlyNote.client_name.in_(normalized_names),
+        ).all()
+
+        return {
+            str(getattr(row, "client_name", "") or "").strip(): str(getattr(row, "note", "") or "").strip()
+            for row in rows
+            if str(getattr(row, "client_name", "") or "").strip()
+            and str(getattr(row, "note", "") or "").strip()
+        }
+
+    def _build_latest_month_row(
+        self,
+        *,
+        latest_month: str,
+        client_name: str,
+        metrics: Dict,
+        client_meta_map: Dict[str, Dict[str, str | None]],
+        note: str | None = None,
+    ) -> Dict:
+        client_label = str(client_name or "").strip()
+        meta = client_meta_map.get(client_label, {})
+        bill_amount = float(metrics.get("total") or metrics.get("consumption") or 0.0)
+        return {
+            "client_name": client_label,
+            "month": latest_month,
+            "entity": meta.get("entity"),
+            "owner": meta.get("owner"),
+            "bill_amount": bill_amount,
+            "note": str(note or "").strip() or None,
+            **metrics,
+        }
+
+    def update_client_month_note(
+        self,
+        *,
+        month: str,
+        client_name: str,
+        note: str | None,
+        db: Session,
+    ) -> Dict:
+        normalized_month = str(month or "").strip()
+        normalized_client_name = str(client_name or "").strip()
+        normalized_note = str(note or "").strip() or None
+
+        if not self._is_valid_month(normalized_month):
+            raise ValueError("month 必须为 YYYY-MM")
+        if not normalized_client_name:
+            raise ValueError("client_name 不能为空")
+
+        record = db.query(ClientMonthlyNote).filter(
+            ClientMonthlyNote.month == normalized_month,
+            ClientMonthlyNote.client_name == normalized_client_name,
+        ).first()
+
+        if record:
+            record.note = normalized_note
+        else:
+            db.add(
+                ClientMonthlyNote(
+                    month=normalized_month,
+                    client_name=normalized_client_name,
+                    note=normalized_note,
+                )
+            )
+        db.commit()
+
+        return {
+            "month": normalized_month,
+            "client_name": normalized_client_name,
+            "note": normalized_note,
+        }
+
+    def _build_history_summary(self, rows: List[Dict]) -> Dict:
+        return {
+            "first_month": rows[-1]["month"] if rows else None,
+            "latest_month": rows[0]["month"] if rows else None,
+            "total_consumption": sum(float(item.get("consumption") or 0.0) for item in rows),
+            "total_flow_consumption": sum(float(item.get("flow_consumption") or 0.0) for item in rows),
+            "total_managed_consumption": sum(float(item.get("managed_consumption") or 0.0) for item in rows),
+            "total_net_consumption": sum(float(item.get("net_consumption") or 0.0) for item in rows),
+            "total_service_fee": sum(float(item.get("service_fee_total") or 0.0) for item in rows),
+            "total_variable_service_fee": sum(float(item.get("service_fee") or 0.0) for item in rows),
+            "total_fixed_service_fee": sum(float(item.get("fixed_service_fee") or 0.0) for item in rows),
+            "total_coupon": sum(float(item.get("coupon") or 0.0) for item in rows),
+            "total_dst": sum(float(item.get("dst") or 0.0) for item in rows),
+            "total_total": sum(float(item.get("total") or 0.0) for item in rows),
+        }
 
     def _find_previous_available_month(self, month: str, db: Session) -> str | None:
         months = self._get_available_months(db)
@@ -267,6 +452,153 @@ class DashboardService:
                     "peak_month": peak_record["month"] if peak_record else None,
                     "peak_value": peak_record["consumption"] if peak_record else 0
                 }
+            }
+        finally:
+            if should_close:
+                db.close()
+
+    def get_latest_month_clients(self, db: Session = None) -> Dict:
+        should_close = False
+        if db is None:
+            db = SessionLocal()
+            should_close = True
+        try:
+            detail_months = self._get_available_detail_months(db)
+            base_months = self._get_available_months(db)
+            months = sorted(set(detail_months) | set(base_months))
+            if not months:
+                return {"latest_month": None, "rows": []}
+
+            latest_month = months[-1]
+            detail_rows = db.query(ClientMonthlyDetailStats).filter(
+                ClientMonthlyDetailStats.month == latest_month
+            ).order_by(
+                desc(ClientMonthlyDetailStats.flow_consumption + ClientMonthlyDetailStats.managed_consumption),
+                ClientMonthlyDetailStats.client_name.asc(),
+            ).all()
+
+            legacy_rows = db.query(
+                ClientMonthlyStats.client_name,
+                ClientMonthlyStats.consumption,
+                ClientMonthlyStats.service_fee,
+            ).filter(
+                ClientMonthlyStats.month == latest_month
+            ).order_by(
+                desc(ClientMonthlyStats.consumption),
+                ClientMonthlyStats.client_name.asc(),
+            ).all()
+
+            detail_metrics_map = {
+                str(row.client_name or "").strip(): self._serialize_detail_metrics(row)
+                for row in detail_rows
+                if str(row.client_name or "").strip()
+            }
+            legacy_metrics_map = {
+                str(row.client_name or "").strip(): self._build_fallback_detail_metrics(
+                    float(row.consumption or 0.0),
+                    float(row.service_fee or 0.0),
+                )
+                for row in legacy_rows
+                if str(row.client_name or "").strip()
+            }
+            client_names = sorted(set(detail_metrics_map.keys()) | set(legacy_metrics_map.keys()))
+
+            client_meta_map = self._build_client_meta_map(db, client_names)
+            note_map = self._build_note_map(db, latest_month, client_names)
+            combined_rows = [
+                self._build_latest_month_row(
+                    latest_month=latest_month,
+                    client_name=client_name,
+                    metrics=detail_metrics_map.get(client_name) or legacy_metrics_map[client_name],
+                    client_meta_map=client_meta_map,
+                    note=note_map.get(client_name),
+                )
+                for client_name in client_names
+            ]
+            combined_rows.sort(
+                key=lambda row: (
+                    -float(row.get("consumption") or 0.0),
+                    str(row.get("client_name") or ""),
+                )
+            )
+            return {
+                "latest_month": latest_month,
+                "rows": combined_rows,
+            }
+        finally:
+            if should_close:
+                db.close()
+
+    def get_client_history(self, client_name: str, db: Session = None) -> Dict:
+        should_close = False
+        if db is None:
+            db = SessionLocal()
+            should_close = True
+        try:
+
+            legacy_rows = db.query(
+                ClientMonthlyStats.month,
+                ClientMonthlyStats.consumption,
+                ClientMonthlyStats.service_fee,
+            ).filter(
+                ClientMonthlyStats.client_name == client_name
+            ).order_by(
+                desc(ClientMonthlyStats.month)
+            ).all()
+
+            detail_rows = db.query(ClientMonthlyDetailStats).filter(
+                ClientMonthlyDetailStats.client_name == client_name
+            ).order_by(
+                desc(ClientMonthlyDetailStats.month)
+            ).all()
+
+            profile_row = db.query(
+                Client.name,
+                Client.business_type,
+                Client.department,
+                Client.entity,
+                Client.fee_clause,
+            ).filter(
+                Client.name == client_name
+            ).first()
+
+            detail_map = {
+                row.month: {
+                    "month": row.month,
+                    **self._serialize_detail_metrics(row),
+                }
+                for row in detail_rows
+                if self._is_valid_month(row.month)
+            }
+            legacy_map = {
+                row.month: self._build_fallback_detail_metrics(
+                    float(row.consumption or 0.0),
+                    float(row.service_fee or 0.0),
+                )
+                for row in legacy_rows
+                if self._is_valid_month(row.month)
+            }
+
+            all_months = sorted(set(detail_map.keys()) | set(legacy_map.keys()), reverse=True)
+            history_rows = []
+            for month in all_months:
+                if month in detail_map:
+                    history_rows.append(detail_map[month])
+                else:
+                    history_rows.append({"month": month, **legacy_map[month]})
+
+            profile = {
+                "client_name": client_name,
+                "business_type": getattr(profile_row, "business_type", None),
+                "department": getattr(profile_row, "department", None),
+                "entity": getattr(profile_row, "entity", None),
+                "fee_clause": getattr(profile_row, "fee_clause", None),
+            }
+
+            return {
+                "profile": profile,
+                "rows": history_rows,
+                "summary": self._build_history_summary(history_rows),
             }
         finally:
             if should_close:

@@ -65,9 +65,9 @@ export function ClientsPanel({
         </div>
       )}
 
-      <div className="table-wrapper">
-        <div className="data-table-container">
-          <table className="data-table">
+      <div className="table-wrapper clients-table-card">
+        <div className="data-table-container clients-table-wrap">
+          <table className="data-table clients-table">
             <thead>
               <tr>
                 <th>客户名称</th>

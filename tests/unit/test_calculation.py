@@ -139,6 +139,20 @@ class TestLiushuiRules:
         assert rate == 0.0
         assert fixed == 0.0
 
+    def test_google_liushui_without_liushui_clause_for_acmer_variants(self):
+        """ACMER 条款无流水标注时，不应被算出流水费率"""
+        clause = "FB/GG 各1000+消耗*7%，如合计消耗*7%大于等于3000，则免收固定的2000。"
+        for client_name in ["Acmer", "ACMER", "acmer"]:
+            rate, fixed = parse_fee_clause(
+                clause,
+                'Google',
+                '流水',
+                50000,
+                client_name=client_name,
+            )
+            assert rate == 0.0
+            assert fixed == 0.0
+
 
 class TestSpecialClauses:
     """特殊条款处理测试"""

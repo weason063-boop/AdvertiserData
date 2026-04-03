@@ -1,14 +1,24 @@
-﻿import type { ChangeEvent, KeyboardEventHandler } from 'react'
+import type { ChangeEvent, KeyboardEventHandler } from 'react'
 import type { CalculationResult, Client, OperationAuditLog, ResultRow, SyncResult } from './billingTypes'
+import { ClientHistoryDetailPanel } from './ClientHistoryDetailPanel'
 import { ClientsPanel } from './ClientsPanel'
 import { Dashboard } from './DashboardV5'
 import { ExchangeRates } from './ExchangeRates'
 import { ErrorBoundary } from './ErrorBoundary'
+import { LatestMonthClientsPanel } from './LatestMonthClientsPanelV2'
 import { ResultsPanel } from './ResultsPanel'
 import { TaskHistoryPanel } from './TaskHistoryPanel'
 import { TopbarActions } from './TopbarActions'
 
-type Tab = 'dashboard' | 'clients' | 'results' | 'rates' | 'taskHistory'
+type Tab =
+  | 'dashboard'
+  | 'clientLedger'
+  | 'clientDetail'
+  | 'clients'
+  | 'results'
+  | 'estimateResults'
+  | 'rates'
+  | 'taskHistory'
 
 interface DashboardData {
   stats: any
@@ -28,16 +38,23 @@ interface MainContentShellProps {
   loading: boolean
   isAddingClient: boolean
   hasResults: boolean
+  hasEstimateResults: boolean
   onOpenLogin: () => void
   onAddClient: () => void
   onSyncFeishu: () => void
   onUploadContract: (event: ChangeEvent<HTMLInputElement>) => void
   onUploadConsumption: (event: ChangeEvent<HTMLInputElement>) => void
+  onUploadEstimateConsumption: (event: ChangeEvent<HTMLInputElement>) => void
   onRecalculate: () => void
+  onRecalculateEstimate: () => void
   onDownloadResult: () => void
+  onDownloadEstimateResult: () => void
   dashboardData: DashboardData
   onNotify: (message: string, type: 'info' | 'success' | 'error') => void
   onRequireAuth: () => void
+  selectedClientName: string | null
+  onOpenClientDetail: (clientName: string) => void
+  onCloseClientDetail: () => void
   syncResult: SyncResult | null
   clients: Client[]
   editingClient: Client | null
@@ -59,15 +76,27 @@ interface MainContentShellProps {
   onResultsPageSizeChange: (size: number) => void
   onPrevResultsPage: () => void
   onNextResultsPage: () => void
+  estimateResults: CalculationResult | null
+  pagedEstimateResultsData: ResultRow[]
+  estimateResultsTotalRows: number
+  estimateResultsPage: number
+  estimateResultsTotalPages: number
+  estimateResultsPageSize: number
+  onEstimateResultsPageSizeChange: (size: number) => void
+  onPrevEstimateResultsPage: () => void
+  onNextEstimateResultsPage: () => void
   formatNumber: (value: string | number) => string
   taskHistoryItems: OperationAuditLog[]
   taskHistoryLoading: boolean
   taskHistoryLimit: number
+  taskHistoryCurrentPage: number
+  taskHistoryTotalCount: number
   taskHistoryActorFilter: string
   taskHistoryActionFilter: string
   taskHistoryStatusFilter: string
   taskHistoryDaysFilter: string
   onTaskHistoryLimitChange: (size: number) => void
+  onTaskHistoryCurrentPageChange: (next: number) => void
   onTaskHistoryActorFilterChange: (value: string) => void
   onTaskHistoryActionFilterChange: (value: string) => void
   onTaskHistoryStatusFilterChange: (value: string) => void
@@ -81,6 +110,14 @@ const getTitle = (activeTab: Tab): string => {
   switch (activeTab) {
     case 'dashboard':
       return '数据概览'
+    case 'clientLedger':
+      return '客户明细'
+    case 'clientDetail':
+      return '客户历史账单'
+    case 'results':
+      return '账单明细'
+    case 'estimateResults':
+      return '预估消耗'
     case 'rates':
       return '实时汇率查询'
     case 'clients':
@@ -88,7 +125,7 @@ const getTitle = (activeTab: Tab): string => {
     case 'taskHistory':
       return '任务历史'
     default:
-      return '账单明细'
+      return '明细'
   }
 }
 
@@ -104,16 +141,23 @@ export function MainContentShell({
   loading,
   isAddingClient,
   hasResults,
+  hasEstimateResults,
   onOpenLogin,
   onAddClient,
   onSyncFeishu,
   onUploadContract,
   onUploadConsumption,
+  onUploadEstimateConsumption,
   onRecalculate,
+  onRecalculateEstimate,
   onDownloadResult,
+  onDownloadEstimateResult,
   dashboardData,
   onNotify,
   onRequireAuth,
+  selectedClientName,
+  onOpenClientDetail,
+  onCloseClientDetail,
   syncResult,
   clients,
   editingClient,
@@ -135,15 +179,27 @@ export function MainContentShell({
   onResultsPageSizeChange,
   onPrevResultsPage,
   onNextResultsPage,
+  estimateResults,
+  pagedEstimateResultsData,
+  estimateResultsTotalRows,
+  estimateResultsPage,
+  estimateResultsTotalPages,
+  estimateResultsPageSize,
+  onEstimateResultsPageSizeChange,
+  onPrevEstimateResultsPage,
+  onNextEstimateResultsPage,
   formatNumber,
   taskHistoryItems,
   taskHistoryLoading,
   taskHistoryLimit,
+  taskHistoryCurrentPage,
+  taskHistoryTotalCount,
   taskHistoryActorFilter,
   taskHistoryActionFilter,
   taskHistoryStatusFilter,
   taskHistoryDaysFilter,
   onTaskHistoryLimitChange,
+  onTaskHistoryCurrentPageChange,
   onTaskHistoryActorFilterChange,
   onTaskHistoryActionFilterChange,
   onTaskHistoryStatusFilterChange,
@@ -160,6 +216,7 @@ export function MainContentShell({
           showLoginButton={!isAuthenticated}
           showClientsActions={activeTab === 'clients'}
           showResultsActions={activeTab === 'results'}
+          showEstimateResultsActions={activeTab === 'estimateResults'}
           search={search}
           onSearchChange={onSearchChange}
           onSearchKeyPress={onSearchKeyPress}
@@ -169,13 +226,17 @@ export function MainContentShell({
           loading={loading}
           isAddingClient={isAddingClient}
           hasResults={hasResults}
+          hasEstimateResults={hasEstimateResults}
           onOpenLogin={onOpenLogin}
           onAddClient={onAddClient}
           onSyncFeishu={onSyncFeishu}
           onUploadContract={onUploadContract}
           onUploadConsumption={onUploadConsumption}
+          onUploadEstimateConsumption={onUploadEstimateConsumption}
           onRecalculate={onRecalculate}
+          onRecalculateEstimate={onRecalculateEstimate}
           onDownloadResult={onDownloadResult}
+          onDownloadEstimateResult={onDownloadEstimateResult}
         />
 
         <ErrorBoundary>
@@ -187,6 +248,26 @@ export function MainContentShell({
               onRequireAuth={onRequireAuth}
             />
           )}
+
+          <LatestMonthClientsPanel
+            active={activeTab === 'clientLedger'}
+            isAuthenticated={isAuthenticated}
+            selectedClientName={selectedClientName}
+            formatNumber={formatNumber}
+            onOpenClientDetail={onOpenClientDetail}
+            onNotify={onNotify}
+            onRequireAuth={onRequireAuth}
+          />
+
+          <ClientHistoryDetailPanel
+            active={activeTab === 'clientDetail'}
+            isAuthenticated={isAuthenticated}
+            clientName={selectedClientName}
+            formatNumber={formatNumber}
+            onBack={onCloseClientDetail}
+            onNotify={onNotify}
+            onRequireAuth={onRequireAuth}
+          />
 
           {activeTab === 'rates' && <ExchangeRates />}
 
@@ -227,11 +308,32 @@ export function MainContentShell({
             </div>
           )}
 
+          {activeTab === 'estimateResults' && (
+            <div className="results-section">
+              <ResultsPanel
+                active
+                results={estimateResults}
+                pagedResultsData={pagedEstimateResultsData}
+                resultsTotalRows={estimateResultsTotalRows}
+                resultsPage={estimateResultsPage}
+                resultsTotalPages={estimateResultsTotalPages}
+                resultsPageSize={estimateResultsPageSize}
+                onPageSizeChange={onEstimateResultsPageSizeChange}
+                onPrevPage={onPrevEstimateResultsPage}
+                onNextPage={onNextEstimateResultsPage}
+                formatNumber={formatNumber}
+              />
+            </div>
+          )}
+
           {activeTab === 'taskHistory' && (
             <div className="results-section">
               <TaskHistoryPanel
                 active
                 items={taskHistoryItems}
+                totalCount={taskHistoryTotalCount}
+                currentPage={taskHistoryCurrentPage}
+                onCurrentPageChange={onTaskHistoryCurrentPageChange}
                 loading={taskHistoryLoading}
                 limit={taskHistoryLimit}
                 actorFilter={taskHistoryActorFilter}

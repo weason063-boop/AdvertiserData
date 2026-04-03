@@ -2,20 +2,28 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import shutil
 import threading
 import time
 import uuid
 from datetime import date, datetime, timedelta
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 from fastapi import HTTPException, UploadFile
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import Session
 
-from api.database import record_operation_audit, upsert_billing_history, upsert_client_stats_batch
+from api.database import (
+    record_operation_audit,
+    upsert_billing_history,
+    upsert_client_detail_stats_batch,
+    upsert_client_stats_batch,
+)
 from api.services.daily_fx_snapshot_service import DailyFxSnapshotService
 from calculate_service_fee import calculate_service_fees
 
@@ -38,10 +46,26 @@ class CalculationService:
     _RESULT_FILE_PATTERN = re.compile(r"^[\w.\-\u4e00-\u9fff]+_results\.xlsx$", re.IGNORECASE)
     _RESULT_ID_PATTERN = re.compile(r"^[a-f0-9]{32}$", re.IGNORECASE)
     _ALLOWED_EXCEL_EXTENSIONS = {".xlsx", ".xls"}
+    _TEXT_EMPTY_VALUES = {"", "-", "/", "—", "nan", "none"}
+    _NET_CONSUMPTION_COLUMN_CANDIDATES = ("汇总纯花费", "汇总纯消耗")
+    _COUPON_COLUMN_CANDIDATES = ("Coupon", "COUPON", "coupon")
+    _DST_COLUMN_CANDIDATES = (
+        "监管运营费用/数字服务税(DST)\xa0",
+        "监管运营费用/数字服务税 (DST)\xa0",
+        "监管运营费用/数字服务税(DST)",
+        "监管运营费用/数字服务税 (DST)",
+    )
+    _DEFAULT_RESULT_OPERATIONS = {"calculate", "recalculate"}
+    _ESTIMATE_RESULT_OPERATIONS = {"estimate_calculate", "estimate_recalculate"}
+    _ESTIMATE_SHEET_NAME = "Sheet1"
+    _ESTIMATE_OUTPUT_SHEET_NAME = "Sheet2"
+    _ESTIMATE_REQUIRED_COLUMNS = ("媒介", "投放类型", "母公司")
 
     def __init__(self, daily_fx_snapshot_service: DailyFxSnapshotService | None = None):
         self._daily_fx_snapshot_service = daily_fx_snapshot_service or DailyFxSnapshotService()
         self._result_registry_lock = threading.Lock()
+        self._detail_backfill_lock = threading.Lock()
+        self._detail_backfill_signature: tuple[tuple[str, int, int], ...] | None = None
 
     def _audit(
         self,
@@ -74,6 +98,9 @@ class CalculationService:
 
     def _get_latest_consumption_meta_path(self) -> Path:
         return self._get_upload_dir() / ".latest_consumption.json"
+
+    def _get_latest_estimate_consumption_meta_path(self) -> Path:
+        return self._get_upload_dir() / ".latest_estimate_consumption.json"
 
     def _get_result_registry_path(self) -> Path:
         return self._get_upload_dir() / ".result_registry.json"
@@ -145,6 +172,225 @@ class CalculationService:
                 )
         finally:
             workbook.close()
+
+    def _find_estimate_dynamic_column(
+        self,
+        columns: list[str],
+        *,
+        include_words: tuple[str, ...],
+    ) -> str | None:
+        for column_name in columns:
+            text = str(column_name).strip()
+            if text and all(word in text for word in include_words):
+                return text
+        return None
+
+    def _normalize_estimate_text(self, value: Any) -> str:
+        if value is None:
+            return ""
+        try:
+            if pd.isna(value):
+                return ""
+        except Exception:
+            pass
+        return str(value).strip()
+
+    def _normalize_estimate_service_type(self, value: Any) -> str:
+        text = self._normalize_estimate_text(value)
+        if not text:
+            return ""
+        normalized = text.replace(" ", "")
+        if "代投" in normalized and "流水" in normalized:
+            return "代投+流水"
+        if "代投" in normalized:
+            return "代投"
+        if "流水" in normalized:
+            return "流水"
+        return text
+
+    def _validate_estimate_workbook(self, file_path: str) -> None:
+        workbook = self._open_excel_workbook(file_path, context="预估模板上传文件")
+        try:
+            if self._ESTIMATE_SHEET_NAME not in workbook.sheet_names:
+                raise HTTPException(status_code=400, detail="预估模板缺少 Sheet1")
+            header_df = pd.read_excel(workbook, sheet_name=self._ESTIMATE_SHEET_NAME, nrows=0)
+            columns = [str(col).strip() for col in header_df.columns.tolist()]
+            missing_columns = [col for col in self._ESTIMATE_REQUIRED_COLUMNS if col not in columns]
+            if missing_columns:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"预估模板 Sheet1 缺少必需列：{'、'.join(missing_columns)}",
+                )
+            consumption_col = self._find_estimate_dynamic_column(
+                columns,
+                include_words=("消耗", "预估"),
+            )
+            gross_profit_col = self._find_estimate_dynamic_column(
+                columns,
+                include_words=("毛利", "预估"),
+            )
+            if not consumption_col:
+                raise HTTPException(status_code=400, detail="预估模板 Sheet1 缺少“消耗预估”动态列")
+            if not gross_profit_col:
+                raise HTTPException(status_code=400, detail="预估模板 Sheet1 缺少“毛利预估”动态列")
+        finally:
+            workbook.close()
+
+    def _prepare_estimate_calculation_input(
+        self,
+        file_path: str,
+    ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str, str]:
+        sheet1_df = pd.read_excel(file_path, sheet_name=self._ESTIMATE_SHEET_NAME)
+        column_lookup = {str(col).strip(): col for col in sheet1_df.columns.tolist()}
+        missing_columns = [col for col in self._ESTIMATE_REQUIRED_COLUMNS if col not in column_lookup]
+        if missing_columns:
+            raise HTTPException(status_code=400, detail=f"预估模板 Sheet1 缺少必需列：{'、'.join(missing_columns)}")
+
+        normalized_columns = list(column_lookup.keys())
+        consumption_column_name = self._find_estimate_dynamic_column(
+            normalized_columns,
+            include_words=("消耗", "预估"),
+        )
+        gross_profit_column_name = self._find_estimate_dynamic_column(
+            normalized_columns,
+            include_words=("毛利", "预估"),
+        )
+        if not consumption_column_name:
+            raise HTTPException(status_code=400, detail="预估模板 Sheet1 缺少“消耗预估”动态列")
+        if not gross_profit_column_name:
+            raise HTTPException(status_code=400, detail="预估模板 Sheet1 缺少“毛利预估”动态列")
+
+        rows = pd.DataFrame(
+            {
+                "_source_client": sheet1_df[column_lookup["母公司"]].map(self._normalize_estimate_text),
+                "_service_type": sheet1_df[column_lookup["投放类型"]].map(self._normalize_estimate_service_type),
+                "媒介": sheet1_df[column_lookup["媒介"]].map(self._normalize_estimate_text),
+                "_estimate_consumption": pd.to_numeric(
+                    sheet1_df[column_lookup[consumption_column_name]],
+                    errors="coerce",
+                ).fillna(0.0),
+                "_estimate_gross_profit": pd.to_numeric(
+                    sheet1_df[column_lookup[gross_profit_column_name]],
+                    errors="coerce",
+                ).fillna(0.0),
+            }
+        )
+        rows = rows[
+            (rows["_source_client"] != "")
+            & (rows["_service_type"] != "")
+            & (rows["媒介"] != "")
+        ].copy()
+        if rows.empty:
+            raise HTTPException(status_code=400, detail="预估模板 Sheet1 没有可计算的数据行")
+
+        from billing.contract_loader import load_contract_terms_from_db
+
+        contract_terms = load_contract_terms_from_db()
+        contract_name_map: dict[str, str] = {}
+        for name in contract_terms:
+            normalized_name = self._normalize_estimate_text(name)
+            if normalized_name:
+                contract_name_map.setdefault(normalized_name.lower(), normalized_name)
+
+        def _resolve_contract_client_name(client_name: str) -> str:
+            if not client_name:
+                return client_name
+            if client_name in contract_terms:
+                return client_name
+            return contract_name_map.get(client_name.lower(), client_name)
+
+        rows["_contract_client"] = rows["_source_client"].apply(_resolve_contract_client_name)
+
+        grouped = (
+            rows.groupby(
+                ["_source_client", "_service_type", "媒介", "_contract_client"],
+                as_index=False,
+            )[["_estimate_consumption", "_estimate_gross_profit"]]
+            .sum()
+        )
+
+        sheet2_seed_df = grouped.rename(
+            columns={
+                "_source_client": "母公司",
+                "_service_type": "服务类型",
+            }
+        )
+
+        calc_input_df = sheet2_seed_df[["_contract_client", "服务类型", "媒介", "_estimate_consumption"]].copy()
+        calc_input_df.rename(columns={"_contract_client": "母公司"}, inplace=True)
+        calc_input_df["代投消耗"] = 0.0
+        calc_input_df["流水消耗"] = 0.0
+        calc_input_df.loc[calc_input_df["服务类型"] == "代投", "代投消耗"] = calc_input_df["_estimate_consumption"]
+        calc_input_df.loc[calc_input_df["服务类型"] == "流水", "流水消耗"] = calc_input_df["_estimate_consumption"]
+        calc_input_df = calc_input_df[["母公司", "媒介", "服务类型", "代投消耗", "流水消耗"]]
+
+        return (
+            sheet1_df,
+            sheet2_seed_df,
+            calc_input_df,
+            consumption_column_name,
+            gross_profit_column_name,
+        )
+
+    def _build_estimate_sheet2_output(
+        self,
+        *,
+        sheet2_seed_df: pd.DataFrame,
+        result_df: pd.DataFrame,
+        consumption_column_name: str,
+        gross_profit_column_name: str,
+    ) -> pd.DataFrame:
+        if {"母公司", "服务类型", "媒介"}.issubset(set(result_df.columns.tolist())):
+            fee_df = result_df[["母公司", "服务类型", "媒介"]].copy()
+            fee_df["服务费"] = pd.to_numeric(result_df.get("服务费"), errors="coerce").fillna(0.0)
+            fee_df["固定服务费"] = pd.to_numeric(result_df.get("固定服务费"), errors="coerce").fillna(0.0)
+            fee_df = (
+                fee_df.groupby(["母公司", "服务类型", "媒介"], as_index=False)[["服务费", "固定服务费"]]
+                .sum()
+                .rename(
+                    columns={
+                        "母公司": "_contract_client",
+                        "服务费": "_estimate_service_fee",
+                        "固定服务费": "_estimate_fixed_service_fee",
+                    }
+                )
+            )
+        else:
+            fee_df = pd.DataFrame(
+                columns=[
+                    "_contract_client",
+                    "服务类型",
+                    "媒介",
+                    "_estimate_service_fee",
+                    "_estimate_fixed_service_fee",
+                ]
+            )
+
+        merged = sheet2_seed_df.merge(
+            fee_df,
+            how="left",
+            on=["_contract_client", "服务类型", "媒介"],
+        )
+        merged["_estimate_service_fee"] = pd.to_numeric(
+            merged.get("_estimate_service_fee"),
+            errors="coerce",
+        ).fillna(0.0)
+        merged["_estimate_fixed_service_fee"] = pd.to_numeric(
+            merged.get("_estimate_fixed_service_fee"),
+            errors="coerce",
+        ).fillna(0.0)
+
+        return pd.DataFrame(
+            {
+                "母公司": merged["母公司"],
+                "服务类型": merged["服务类型"],
+                "媒介": merged["媒介"],
+                consumption_column_name: merged["_estimate_consumption"],
+                "预估服务费": merged["_estimate_service_fee"],
+                "预估固定服务费": merged["_estimate_fixed_service_fee"],
+                gross_profit_column_name: merged["_estimate_gross_profit"],
+            }
+        )
 
     def _validate_contract_workbook(self, file_path: str) -> None:
         workbook = self._open_excel_workbook(file_path, context="合同上传文件")
@@ -326,7 +572,12 @@ class CalculationService:
             "download_url": f"/api/download/{filename}",
         }
 
-    def get_latest_result_info_for_user(self, owner_username: str) -> dict[str, Any]:
+    def get_latest_result_info_for_user(
+        self,
+        owner_username: str,
+        *,
+        operations: set[str] | None = None,
+    ) -> dict[str, Any]:
         with self._result_registry_lock:
             state = self._load_result_registry_unlocked()
             records = self._prune_result_records(state.get("records", []))
@@ -334,6 +585,12 @@ class CalculationService:
             self._save_result_registry_unlocked(state)
 
         user_records = [item for item in records if item.get("owner") == owner_username]
+        if operations:
+            user_records = [
+                item
+                for item in user_records
+                if str(item.get("operation") or "").strip() in operations
+            ]
         if not user_records:
             return {"has_result": False}
 
@@ -422,8 +679,18 @@ class CalculationService:
             )
         return {"hangseng_today": today_snapshot or {}}
 
-    def _record_latest_consumption(self, file_path: str, original_filename: str | None):
-        meta_path = self._get_latest_consumption_meta_path()
+    def _record_latest_uploaded_file(
+        self,
+        file_path: str,
+        original_filename: str | None,
+        *,
+        estimate: bool = False,
+    ) -> None:
+        meta_path = (
+            self._get_latest_estimate_consumption_meta_path()
+            if estimate
+            else self._get_latest_consumption_meta_path()
+        )
         payload = {
             "file_path": str(Path(file_path).resolve()),
             "original_filename": original_filename or Path(file_path).name,
@@ -432,6 +699,12 @@ class CalculationService:
             meta_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         except Exception:
             logger.warning("保存最近消耗文件元数据失败", exc_info=True)
+
+    def _record_latest_consumption(self, file_path: str, original_filename: str | None):
+        self._record_latest_uploaded_file(file_path, original_filename, estimate=False)
+
+    def _record_latest_estimate_consumption(self, file_path: str, original_filename: str | None):
+        self._record_latest_uploaded_file(file_path, original_filename, estimate=True)
 
     def _cleanup_failed_upload(self, file_path: Path) -> None:
         if not file_path.exists():
@@ -475,18 +748,49 @@ class CalculationService:
         except Exception:
             return False
 
-    def get_latest_consumption_file(self) -> tuple[str, str]:
-        """Get latest uploaded consumption file path and original filename."""
-        meta_path = self._get_latest_consumption_meta_path()
+    def _looks_like_estimate_consumption_file(self, file_path: Path) -> bool:
+        try:
+            workbook = pd.ExcelFile(file_path)
+            try:
+                if self._ESTIMATE_SHEET_NAME not in workbook.sheet_names:
+                    return False
+                header_df = pd.read_excel(workbook, sheet_name=self._ESTIMATE_SHEET_NAME, nrows=0)
+                cols = [str(col).strip() for col in header_df.columns.tolist()]
+                if not set(self._ESTIMATE_REQUIRED_COLUMNS).issubset(set(cols)):
+                    return False
+                consumption_col = self._find_estimate_dynamic_column(cols, include_words=("消耗", "预估"))
+                gross_profit_col = self._find_estimate_dynamic_column(cols, include_words=("毛利", "预估"))
+                return bool(consumption_col and gross_profit_col)
+            finally:
+                workbook.close()
+        except Exception:
+            return False
+
+    def _get_latest_uploaded_file(
+        self,
+        *,
+        estimate: bool,
+    ) -> tuple[str, str]:
+        meta_path = (
+            self._get_latest_estimate_consumption_meta_path()
+            if estimate
+            else self._get_latest_consumption_meta_path()
+        )
+        looks_like = self._looks_like_estimate_consumption_file if estimate else self._looks_like_consumption_file
+        not_found_message = (
+            "未找到可重算的预估消耗文件，请先上传预估模板。"
+            if estimate
+            else "未找到可重算的消耗文件，请先上传消耗数据。"
+        )
         if meta_path.exists():
             try:
                 payload = json.loads(meta_path.read_text(encoding="utf-8"))
                 candidate = Path(str(payload.get("file_path", "")).strip())
                 original = str(payload.get("original_filename") or candidate.name)
-                if candidate.exists() and candidate.is_file() and self._looks_like_consumption_file(candidate):
+                if candidate.exists() and candidate.is_file() and looks_like(candidate):
                     return str(candidate), original
             except Exception:
-                logger.warning("读取最近消耗文件元数据失败，改用目录扫描", exc_info=True)
+                logger.warning("读取最近上传文件元数据失败，改用目录扫描", exc_info=True)
 
         upload_dir = self._get_upload_dir()
         candidates = sorted(
@@ -503,10 +807,17 @@ class CalculationService:
         )
 
         for candidate in candidates:
-            if self._looks_like_consumption_file(candidate):
+            if looks_like(candidate):
                 return str(candidate), candidate.name
 
-        raise HTTPException(status_code=404, detail="未找到可重算的消耗文件，请先上传消耗数据。")
+        raise HTTPException(status_code=404, detail=not_found_message)
+
+    def get_latest_consumption_file(self) -> tuple[str, str]:
+        """Get latest uploaded consumption file path and original filename."""
+        return self._get_latest_uploaded_file(estimate=False)
+
+    def get_latest_estimate_consumption_file(self) -> tuple[str, str]:
+        return self._get_latest_uploaded_file(estimate=True)
 
     def recalculate_latest(self, owner_username: str = "system"):
         """Re-run calculation with latest uploaded consumption file."""
@@ -516,6 +827,17 @@ class CalculationService:
             original_filename,
             owner_username=owner_username,
             operation="recalculate",
+        )
+        result["source_file"] = Path(file_path).name
+        return result
+
+    def recalculate_latest_estimate(self, owner_username: str = "system"):
+        file_path, original_filename = self.get_latest_estimate_consumption_file()
+        result = self.process_estimate_local_file(
+            file_path,
+            original_filename,
+            owner_username=owner_username,
+            operation="estimate_recalculate",
         )
         result["source_file"] = Path(file_path).name
         return result
@@ -560,6 +882,45 @@ class CalculationService:
             )
             raise HTTPException(status_code=500, detail=f"File save failed: {exc}")
 
+    async def save_uploaded_estimate_file(self, file: UploadFile, owner_username: str = "system") -> str:
+        upload_dir = self._get_upload_dir()
+        safe_filename = secure_filename(file.filename)
+        self._validate_excel_extension(safe_filename, context="预估模板上传文件")
+        file_path = upload_dir / safe_filename
+
+        try:
+            with open(file_path, "wb") as f:
+                shutil.copyfileobj(file.file, f)
+            self._validate_estimate_workbook(str(file_path))
+            self._record_latest_estimate_consumption(str(file_path), file.filename)
+            self._audit(
+                action="upload_estimate_consumption",
+                actor=owner_username,
+                status="success",
+                input_file=safe_filename,
+            )
+            return str(file_path)
+        except HTTPException as exc:
+            self._cleanup_failed_upload(file_path)
+            self._audit(
+                action="upload_estimate_consumption",
+                actor=owner_username,
+                status="failed",
+                input_file=safe_filename,
+                error_message=str(exc.detail),
+            )
+            raise
+        except Exception as exc:
+            logger.error("Estimate file save failed for %s", safe_filename, exc_info=True)
+            self._audit(
+                action="upload_estimate_consumption",
+                actor=owner_username,
+                status="failed",
+                input_file=safe_filename,
+                error_message=str(exc),
+            )
+            raise HTTPException(status_code=500, detail=f"Estimate file save failed: {exc}")
+
     async def process_calculation(self, file: UploadFile, owner_username: str = "system"):
         file_path = await self.save_uploaded_file(file, owner_username=owner_username)
         return self.process_local_file(
@@ -569,6 +930,51 @@ class CalculationService:
             operation="calculate",
         )
 
+    async def process_estimate_calculation(self, file: UploadFile, owner_username: str = "system"):
+        file_path = await self.save_uploaded_estimate_file(file, owner_username=owner_username)
+        return self.process_estimate_local_file(
+            file_path,
+            file.filename or Path(file_path).name,
+            owner_username=owner_username,
+            operation="estimate_calculate",
+        )
+
+    def _run_calculation_core(
+        self,
+        file_path: str,
+        original_filename: str,
+        *,
+        persist_stats: bool,
+        require_fx_snapshot: bool,
+        exchange_context: dict[str, Any] | None = None,
+        output_path: str | None = None,
+    ) -> str:
+        month_hint = self._parse_month_from_filename(original_filename)
+        calculation_date = month_hint or None
+
+        if exchange_context is None:
+            if require_fx_snapshot:
+                has_rmb_rows = self._contains_rmb_consumption(file_path)
+                has_jpy_rows = self._contains_jpy_consumption(file_path)
+                exchange_context = self._build_daily_exchange_context(
+                    require_snapshot=has_rmb_rows or has_jpy_rows
+                )
+            else:
+                exchange_context = {"hangseng_today": {}}
+
+        output_file = calculate_service_fees(
+            file_path,
+            contract_path=None,
+            output_path=output_path,
+            use_db=True,
+            calculation_date=calculation_date,
+            exchange_context=exchange_context,
+        )
+
+        if persist_stats:
+            self._update_stats_from_result(original_filename, output_file)
+        return output_file
+
     def process_local_file(
         self,
         file_path: str,
@@ -576,25 +982,23 @@ class CalculationService:
         *,
         owner_username: str = "system",
         operation: str = "calculate",
+        persist_stats: bool = True,
+        require_fx_snapshot: bool = True,
+        exchange_context: dict[str, Any] | None = None,
+        output_path: str | None = None,
     ):
         """Run the core billing calculation and update statistics."""
         try:
-            month_hint = self._parse_month_from_filename(original_filename)
-            calculation_date = month_hint or None
-            has_rmb_rows = self._contains_rmb_consumption(file_path)
-            has_jpy_rows = self._contains_jpy_consumption(file_path)
-            exchange_context = self._build_daily_exchange_context(require_snapshot=has_rmb_rows or has_jpy_rows)
-
-            output_path = calculate_service_fees(
+            output_file = self._run_calculation_core(
                 file_path,
-                contract_path=None,
-                use_db=True,
-                calculation_date=calculation_date,
+                original_filename,
+                persist_stats=persist_stats,
+                require_fx_snapshot=require_fx_snapshot,
                 exchange_context=exchange_context,
+                output_path=output_path,
             )
 
-            self._update_stats_from_result(original_filename, output_path)
-            output_name = Path(output_path).name
+            output_name = Path(output_file).name
             result_record = self._register_result(
                 filename=output_name,
                 owner_username=owner_username,
@@ -645,6 +1049,116 @@ class CalculationService:
             )
             logger.error("Local file processing failed", exc_info=True)
             raise
+
+    def process_estimate_local_file(
+        self,
+        file_path: str,
+        original_filename: str,
+        *,
+        owner_username: str = "system",
+        operation: str = "estimate_calculate",
+    ) -> dict[str, Any]:
+        temp_input: Path | None = None
+        temp_output: Path | None = None
+        try:
+            (
+                sheet1_df,
+                sheet2_seed_df,
+                calc_input_df,
+                consumption_column_name,
+                gross_profit_column_name,
+            ) = self._prepare_estimate_calculation_input(file_path)
+            upload_dir = self._get_upload_dir()
+            temp_id = uuid.uuid4().hex
+            temp_input = upload_dir / f"estimate_calc_input_{temp_id}.xlsx"
+            temp_output = upload_dir / f"estimate_calc_output_{temp_id}.xlsx"
+
+            calc_input_df.to_excel(temp_input, index=False, sheet_name="USD")
+            output_file = self._run_calculation_core(
+                str(temp_input),
+                original_filename,
+                persist_stats=False,
+                require_fx_snapshot=False,
+                exchange_context={"hangseng_today": {}},
+                output_path=str(temp_output),
+            )
+
+            result_df = pd.read_excel(output_file)
+            sheet2_df = self._build_estimate_sheet2_output(
+                sheet2_seed_df=sheet2_seed_df,
+                result_df=result_df,
+                consumption_column_name=consumption_column_name,
+                gross_profit_column_name=gross_profit_column_name,
+            )
+
+            original_path = Path(original_filename)
+            if original_path.suffix.lower() in self._ALLOWED_EXCEL_EXTENSIONS:
+                output_name = f"{original_path.stem}_estimate_results{original_path.suffix}"
+            else:
+                output_name = f"{original_path.stem}_estimate_results.xlsx"
+            final_output_path = upload_dir / secure_filename(output_name)
+
+            with pd.ExcelWriter(final_output_path) as writer:
+                sheet1_df.to_excel(writer, index=False, sheet_name=self._ESTIMATE_SHEET_NAME)
+                sheet2_df.to_excel(writer, index=False, sheet_name=self._ESTIMATE_OUTPUT_SHEET_NAME)
+
+            result_record = self._register_result(
+                filename=final_output_path.name,
+                owner_username=owner_username,
+                source_file=original_filename,
+                operation=operation,
+            )
+            result_id = str(result_record["id"])
+            self._audit(
+                action=operation,
+                actor=owner_username,
+                status="success",
+                input_file=original_filename,
+                output_file=final_output_path.name,
+                result_ref=result_id,
+            )
+            return {
+                "status": "ok",
+                "result_id": result_id,
+                "output_file": final_output_path.name,
+                "download_url": f"/api/download/{result_id}",
+                "data_url": f"/api/results/{result_id}",
+            }
+        except HTTPException as exc:
+            self._audit(
+                action=operation,
+                actor=owner_username,
+                status="failed",
+                input_file=original_filename,
+                error_message=str(exc.detail),
+            )
+            raise
+        except ValueError as exc:
+            self._audit(
+                action=operation,
+                actor=owner_username,
+                status="failed",
+                input_file=original_filename,
+                error_message=str(exc),
+            )
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            self._audit(
+                action=operation,
+                actor=owner_username,
+                status="failed",
+                input_file=original_filename,
+                error_message=str(exc),
+            )
+            logger.error("Estimate local file processing failed", exc_info=True)
+            raise
+        finally:
+            for temp_path in (temp_input, temp_output):
+                if temp_path and temp_path.exists():
+                    try:
+                        temp_path.unlink(missing_ok=True)
+                    except Exception:
+                        logger.warning("Failed to cleanup temp estimate file: %s", temp_path, exc_info=True)
 
     def _is_valid_month_string(self, month_text: str) -> bool:
         return bool(month_text and self._MONTH_PATTERN.match(month_text))
@@ -719,52 +1233,153 @@ class CalculationService:
                 return f"{year}-{month:02d}"
         return None
 
+    def _to_numeric_series(self, df: pd.DataFrame, column_name: str | None) -> pd.Series:
+        if not column_name or column_name not in df.columns:
+            return pd.Series(0.0, index=df.index, dtype="float64")
+        return pd.to_numeric(df[column_name], errors="coerce").fillna(0.0)
+
+    def _resolve_first_existing_column(self, df: pd.DataFrame, candidates: tuple[str, ...]) -> str | None:
+        for candidate in candidates:
+            if candidate in df.columns:
+                return candidate
+        return None
+
+    def _round2(self, value: float) -> float:
+        try:
+            return float(Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+        except Exception:
+            return round(float(value), 2)
+
+    def _normalize_text_cell(self, value: Any) -> str:
+        if value is None:
+            return "—"
+        try:
+            if pd.isna(value):
+                return "—"
+        except Exception:
+            pass
+        text = str(value).strip()
+        if text.lower() in self._TEXT_EMPTY_VALUES:
+            return "—"
+        return text or "—"
+
+    def _aggregate_text_values(self, series: pd.Series) -> str:
+        values = []
+        for value in series.tolist():
+            normalized = self._normalize_text_cell(value)
+            if normalized == "—":
+                continue
+            values.append(normalized)
+        unique_values = sorted(set(values))
+        if not unique_values:
+            return "—"
+        if len(unique_values) == 1:
+            return unique_values[0]
+        return "多类型"
+
+    def _resolve_dst_column(self, df: pd.DataFrame) -> str | None:
+        for candidate in self._DST_COLUMN_CANDIDATES:
+            if candidate in df.columns:
+                return candidate
+        for column_name in df.columns:
+            normalized = str(column_name).replace("\xa0", "").replace(" ", "")
+            if normalized == "监管运营费用/数字服务税(DST)":
+                return column_name
+        return None
+
+    def _prepare_result_month_batches(
+        self,
+        filename: str,
+        result_source: str | Path | pd.DataFrame,
+    ) -> list[tuple[str, pd.DataFrame]]:
+        result_df = result_source.copy() if isinstance(result_source, pd.DataFrame) else pd.read_excel(result_source)
+        month_str = self._parse_month_from_filename(filename)
+
+        normalized_df = result_df.copy()
+        normalized_df["_client_name"] = (
+            normalized_df["母公司"].apply(self._normalize_text_cell)
+            if "母公司" in normalized_df.columns
+            else "—"
+        )
+        normalized_df = normalized_df[normalized_df["_client_name"] != "—"].copy()
+
+        if normalized_df.empty:
+            return []
+
+        normalized_df["_bill_type"] = (
+            normalized_df["预付/后付"].apply(self._normalize_text_cell)
+            if "预付/后付" in normalized_df.columns
+            else "—"
+        )
+        normalized_df["_service_type"] = (
+            normalized_df["服务类型"].apply(self._normalize_text_cell)
+            if "服务类型" in normalized_df.columns
+            else "—"
+        )
+        normalized_df["_flow_consumption"] = self._to_numeric_series(normalized_df, "流水消耗")
+        normalized_df["_managed_consumption"] = self._to_numeric_series(normalized_df, "代投消耗")
+        net_column = self._resolve_first_existing_column(normalized_df, self._NET_CONSUMPTION_COLUMN_CANDIDATES)
+        net_consumption = self._to_numeric_series(normalized_df, net_column)
+        combined_consumption = normalized_df["_flow_consumption"] + normalized_df["_managed_consumption"]
+        normalized_df["_service_fee"] = self._to_numeric_series(normalized_df, "服务费")
+        normalized_df["_fixed_service_fee"] = self._to_numeric_series(normalized_df, "固定服务费")
+        coupon_column = self._resolve_first_existing_column(normalized_df, self._COUPON_COLUMN_CANDIDATES)
+        normalized_df["_coupon"] = self._to_numeric_series(normalized_df, coupon_column)
+
+        dst_column = self._resolve_dst_column(normalized_df)
+        normalized_df["_dst"] = self._to_numeric_series(normalized_df, dst_column)
+        fx_rate = self._to_numeric_series(normalized_df, "换汇汇率")
+        normalized_df["_fx_rate"] = fx_rate.where(fx_rate.abs() > 1e-9, 1.0)
+
+        converted_has_value = combined_consumption.abs() > 1e-9
+        net_spend_for_total = (net_consumption * normalized_df["_fx_rate"]).where(~converted_has_value, combined_consumption)
+        normalized_df["_net_consumption"] = net_spend_for_total
+        normalized_df["_total"] = (
+            net_spend_for_total
+            + normalized_df["_service_fee"]
+            + normalized_df["_fixed_service_fee"]
+            + normalized_df["_coupon"]
+            + normalized_df["_dst"]
+        ).apply(self._round2)
+
+        normalized_df["_temp_consumption"] = combined_consumption
+        normalized_df["_temp_fee"] = (
+            normalized_df["_service_fee"] + normalized_df["_fixed_service_fee"]
+        )
+
+        months_to_process: list[tuple[str, pd.DataFrame]] = []
+        has_month_col = False
+
+        if "月份归属" in normalized_df.columns and not normalized_df["月份归属"].isnull().all():
+            has_month_col = True
+            try:
+                normalized_df["_month"] = normalized_df["月份归属"].apply(self._normalize_month_value)
+                valid_date_df = normalized_df.dropna(subset=["_month"])
+
+                if not valid_date_df.empty:
+                    invalid_count = int((normalized_df["月份归属"].notna() & normalized_df["_month"].isna()).sum())
+                    if invalid_count:
+                        logger.warning("月份归属列有 %s 行无法识别月份，已忽略", invalid_count)
+                    for month_key, group in valid_date_df.groupby("_month"):
+                        if self._is_valid_month_string(str(month_key)):
+                            months_to_process.append((str(month_key), group.copy()))
+                else:
+                    has_month_col = False
+            except Exception as exc:
+                logger.warning("按月份归属分组失败，回退到单月模式: %s", exc)
+                has_month_col = False
+
+        if not has_month_col:
+            if not month_str or not self._is_valid_month_string(month_str):
+                raise HTTPException(status_code=400, detail=f"无法从文件名 '{filename}' 或数据列 '月份归属' 识别有效月份。")
+            months_to_process.append((month_str, normalized_df.copy()))
+
+        return months_to_process
+
     def _update_stats_from_result(self, filename: str, output_path: str):
         """Parse result Excel and update monthly client and billing stats."""
         try:
-            month_str = self._parse_month_from_filename(filename)
-            res_df = pd.read_excel(output_path)
-
-            res_df["TempConsumption"] = 0.0
-            res_df["TempFee"] = 0.0
-
-            if "代投消耗" in res_df.columns:
-                res_df["TempConsumption"] += pd.to_numeric(res_df["代投消耗"], errors="coerce").fillna(0)
-            if "流水消耗" in res_df.columns:
-                res_df["TempConsumption"] += pd.to_numeric(res_df["流水消耗"], errors="coerce").fillna(0)
-
-            if "服务费" in res_df.columns:
-                res_df["TempFee"] += pd.to_numeric(res_df["服务费"], errors="coerce").fillna(0)
-            if "固定服务费" in res_df.columns:
-                res_df["TempFee"] += pd.to_numeric(res_df["固定服务费"], errors="coerce").fillna(0)
-
-            months_to_process: list[tuple[str, pd.DataFrame]] = []
-            has_month_col = False
-
-            if "月份归属" in res_df.columns and not res_df["月份归属"].isnull().all():
-                has_month_col = True
-                try:
-                    res_df["_MonthStr"] = res_df["月份归属"].apply(self._normalize_month_value)
-                    valid_date_df = res_df.dropna(subset=["_MonthStr"])
-
-                    if not valid_date_df.empty:
-                        invalid_count = int((res_df["月份归属"].notna() & res_df["_MonthStr"].isna()).sum())
-                        if invalid_count:
-                            logger.warning("月份归属列有 %s 行无法识别月份，已忽略", invalid_count)
-                        for month_key, group in valid_date_df.groupby("_MonthStr"):
-                            if self._is_valid_month_string(month_key):
-                                months_to_process.append((month_key, group))
-                    else:
-                        has_month_col = False
-                except Exception as exc:
-                    logger.warning("按月份归属分组失败，回退到单月模式: %s", exc)
-                    has_month_col = False
-
-            if not has_month_col:
-                if not month_str or not self._is_valid_month_string(month_str):
-                    raise HTTPException(status_code=400, detail=f"无法从文件名 '{filename}' 或数据列 '月份归属' 识别有效月份。")
-                months_to_process.append((month_str, res_df))
-
+            months_to_process = self._prepare_result_month_batches(filename, output_path)
             for month_key, current_df in months_to_process:
                 self._upsert_monthly_stats_with_retry(month_key, current_df)
 
@@ -774,11 +1389,17 @@ class CalculationService:
             logger.error("统计保存失败: %s", exc, exc_info=True)
             raise HTTPException(status_code=500, detail=f"统计保存失败: {exc}")
 
-    def _upsert_monthly_stats_with_retry(self, month: str, df: pd.DataFrame, retries: int = 3):
+    def _upsert_monthly_stats_with_retry(
+        self,
+        month: str,
+        df: pd.DataFrame,
+        retries: int = 3,
+        db: Session | None = None,
+    ):
         last_exc = None
         for attempt in range(1, retries + 1):
             try:
-                self._upsert_monthly_stats(month, df)
+                self._upsert_monthly_stats(month, df, db=db)
                 return
             except OperationalError as exc:
                 last_exc = exc
@@ -799,31 +1420,110 @@ class CalculationService:
         if last_exc is not None:
             raise last_exc
 
-    def _upsert_monthly_stats(self, month: str, df: pd.DataFrame):
-        if "母公司" in df.columns:
-            client_stats = df.groupby("母公司")[["TempConsumption", "TempFee"]].sum().reset_index()
-            client_stats = client_stats[(client_stats["TempConsumption"] > 0) | (client_stats["TempFee"] > 0)]
+    def _upsert_monthly_stats(self, month: str, df: pd.DataFrame, db: Session | None = None):
+        if "_client_name" in df.columns:
+            client_stats = df.groupby("_client_name")[["_temp_consumption", "_temp_fee"]].sum().reset_index()
+            client_stats = client_stats[(client_stats["_temp_consumption"] != 0) | (client_stats["_temp_fee"] != 0)]
 
             stats_list = [
                 {
-                    "name": str(row["母公司"]).strip(),
-                    "consumption": row["TempConsumption"],
-                    "fee": row["TempFee"],
+                    "name": str(row["_client_name"]).strip(),
+                    "consumption": float(row["_temp_consumption"] or 0.0),
+                    "fee": float(row["_temp_fee"] or 0.0),
                 }
                 for _, row in client_stats.iterrows()
-                if pd.notna(row["母公司"]) and str(row["母公司"]).strip()
+                if pd.notna(row["_client_name"]) and str(row["_client_name"]).strip()
             ]
-            upsert_client_stats_batch(month, stats_list)
+            upsert_client_stats_batch(month, stats_list, db=db)
 
-        total_consumption = df["TempConsumption"].sum()
-        total_fee = df["TempFee"].sum()
-        upsert_billing_history(month, total_consumption, total_fee)
+            detail_stats_list = []
+            for client_name, group in df.groupby("_client_name"):
+                client_label = str(client_name).strip()
+                if not client_label:
+                    continue
+                detail_stats_list.append(
+                    {
+                        "name": client_label,
+                        "bill_type": self._aggregate_text_values(group["_bill_type"]),
+                        "service_type": self._aggregate_text_values(group["_service_type"]),
+                        "flow_consumption": float(group["_flow_consumption"].sum() or 0.0),
+                        "managed_consumption": float(group["_managed_consumption"].sum() or 0.0),
+                        "net_consumption": float(group["_net_consumption"].sum() or 0.0),
+                        "service_fee": float(group["_service_fee"].sum() or 0.0),
+                        "fixed_service_fee": float(group["_fixed_service_fee"].sum() or 0.0),
+                        "coupon": float(group["_coupon"].sum() or 0.0),
+                        "dst": float(group["_dst"].sum() or 0.0),
+                        "total": float(group["_total"].sum() or 0.0),
+                    }
+                )
+            upsert_client_detail_stats_batch(month, detail_stats_list, db=db)
+
+        total_consumption = df["_temp_consumption"].sum()
+        total_fee = df["_temp_fee"].sum()
+        upsert_billing_history(month, total_consumption, total_fee, db=db)
         logger.info("Month %s: Total Consumption %s, Total Fee %s", month, total_consumption, total_fee)
+
+    def _get_results_file_signature(self) -> tuple[tuple[str, int, int], ...]:
+        signature_parts = []
+        result_paths = []
+        for path in self._get_upload_dir().glob("*_results.xlsx"):
+            try:
+                stat = path.stat()
+            except FileNotFoundError:
+                continue
+            result_paths.append((stat.st_mtime_ns, path.name, stat.st_size))
+
+        for modified_at, filename, size in sorted(result_paths):
+            try:
+                signature_parts.append((filename, modified_at, size))
+            except FileNotFoundError:
+                continue
+        return tuple(signature_parts)
+
+    def backfill_detail_stats_from_results(self, db: Session | None = None) -> None:
+        if os.getenv("TESTING") == "True":
+            return
+
+        signature = self._get_results_file_signature()
+        if not signature:
+            return
+
+        if signature == self._detail_backfill_signature:
+            return
+
+        with self._detail_backfill_lock:
+            if signature == self._detail_backfill_signature:
+                return
+
+            for filename, _, _ in signature:
+                result_path = self._get_upload_dir() / filename
+                if not result_path.exists():
+                    continue
+                try:
+                    months_to_process = self._prepare_result_month_batches(filename, result_path)
+                    for month_key, current_df in months_to_process:
+                        self._upsert_monthly_stats(month_key, current_df, db=db)
+                except Exception as exc:
+                    logger.warning("历史账单明细回填失败: %s (%s)", filename, exc)
+
+            self._detail_backfill_signature = signature
 
     def get_results_data(self, result_ref: str, owner_username: str):
         record = self._resolve_result_record_for_user(result_ref, owner_username)
         file_path = self._resolve_result_file(record["filename"])
-        df = pd.read_excel(file_path)
+        sheet_name: str | int = 0
+        operation = str(record.get("operation") or "")
+        if operation in self._ESTIMATE_RESULT_OPERATIONS:
+            try:
+                workbook = pd.ExcelFile(file_path)
+                try:
+                    if self._ESTIMATE_OUTPUT_SHEET_NAME in workbook.sheet_names:
+                        sheet_name = self._ESTIMATE_OUTPUT_SHEET_NAME
+                finally:
+                    workbook.close()
+            except Exception:
+                logger.warning("读取预估结果 Sheet 失败，回退首个 Sheet: %s", file_path, exc_info=True)
+        df = pd.read_excel(file_path, sheet_name=sheet_name)
 
         for col in df.columns:
             if pd.api.types.is_datetime64_any_dtype(df[col]):
