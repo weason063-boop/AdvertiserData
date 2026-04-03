@@ -121,15 +121,16 @@ export function ClientHistoryDetailPanel({
   return (
     <section className="client-history-section">
       <div className="ledger-page-shell">
-        <div className="table-wrapper client-history-card">
+        <div className="module-card">
           <div className="client-history-header">
-            <div className="client-history-title-block">
-              <button type="button" className="client-history-back-btn" onClick={onBack}>
-                <ArrowLeft size={16} />
-                返回账单明细
-              </button>
-              <h3>{clientName}</h3>
-            </div>
+          <div className="client-history-title-block" style={{ flexDirection: 'row', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+            <button type="button" className="client-history-back-btn" onClick={onBack}>
+              <ArrowLeft size={16} />
+              账单明细
+            </button>
+            <span style={{ color: 'var(--border-strong)' }}>/</span>
+            <h3 style={{ margin: 0, fontSize: '1.06rem' }}>{clientName} 的历史记录</h3>
+          </div>
           </div>
 
           {loading ? (
@@ -147,7 +148,8 @@ export function ClientHistoryDetailPanel({
                   description="当前没有可展示的历史账单明细。"
                 />
               ) : (
-                <div className="data-table-container client-history-table-wrap">
+                <div className="table-wrapper">
+                  <div className="data-table-container client-history-table-wrap">
                   <table className="data-table client-history-table">
                     <thead>
                       <tr>
@@ -173,6 +175,7 @@ export function ClientHistoryDetailPanel({
                     </tbody>
                   </table>
                 </div>
+              </div>
               )}
             </>
           )}

@@ -152,7 +152,7 @@ export function ExchangeRates() {
     const isCfets = sourceId === 'cfets'
 
     return (
-      <div className="table-wrapper" style={{ marginTop: '1rem' }}>
+      <div className="table-wrapper fx-margin-top">
         <table className="data-table">
           <thead>
             {isCfets ? (
@@ -182,14 +182,14 @@ export function ExchangeRates() {
             ) : (
               data.map((rate, idx) => (
                 <tr key={`${rate.currency}-${idx}`}>
-                  <td className="cell-name" style={{ color: '#0369a1', fontWeight: 'bold' }}>
+                  <td className="cell-name fx-currency-name">
                     {rate.currency}
                   </td>
 
                   {isCfets ? (
                     <>
-                      <td style={{ fontSize: '1.1rem', fontWeight: 600 }}>{rate.middle_rate}</td>
-                      <td style={{ color: '#94a3b8' }}>{rate.pub_time}</td>
+                      <td className="fx-val-lg">{rate.middle_rate}</td>
+                      <td className="fx-text-muted">{rate.pub_time}</td>
                     </>
                   ) : (
                     <>
@@ -197,7 +197,7 @@ export function ExchangeRates() {
                       <td>{rate.tt_sell || '-'}</td>
                       <td>{rate.notes_buy || '-'}</td>
                       <td>{rate.notes_sell || '-'}</td>
-                      <td style={{ fontSize: '0.85rem', color: '#94a3b8' }}>{rate.pub_time}</td>
+                      <td className="fx-text-sm-muted">{rate.pub_time}</td>
                     </>
                   )}
                 </tr>
@@ -206,7 +206,7 @@ export function ExchangeRates() {
 
             {!loading && data.length === 0 && (
               <tr>
-                <td colSpan={isCfets ? 3 : 6} style={{ textAlign: 'center', padding: '2rem', color: '#94a3b8' }}>
+                <td colSpan={isCfets ? 3 : 6} className="fx-empty-cell">
                   暂无数据
                 </td>
               </tr>
@@ -219,15 +219,15 @@ export function ExchangeRates() {
 
   return (
     <div className="exchange-rates">
-      <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-          <span style={{ fontSize: '0.9rem', color: '#64748b' }}>汇率维护与查询</span>
+      <div className="page-header fx-page-header">
+        <div className="fx-header-left">
+          <span className="fx-header-subtitle">汇率维护与查询</span>
         </div>
 
 
       </div>
 
-      {error && <div className="error-message" style={{ color: '#ef4444', marginBottom: '1rem' }}>{error}</div>}
+      {error && <div className="error-message fx-error">{error}</div>}
 
       <div className="rate-card fx-snapshot-card">
         <div className="fx-snapshot-header">
@@ -265,20 +265,20 @@ export function ExchangeRates() {
       </div>
 
 
-      <div className="rate-card" style={{ background: 'white', padding: '1.5rem', borderRadius: '12px', border: '1px solid #e2e8f0', marginBottom: '1.5rem', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-            <div style={{ padding: '8px', background: '#f0fdf4', borderRadius: '8px', color: '#16a34a' }}>
+      <div className="rate-card">
+        <div className="fx-card-header">
+          <div className="fx-header-left-md">
+            <div className="fx-icon-green">
               <HandCoins size={20} />
             </div>
             <div>
               <h3 className="fx-section-title">恒生银行 (Hang Seng) - 日快照维护</h3>
-              <div style={{ fontSize: '0.85rem', color: '#64748b', marginTop: '2px' }}>在此录入并维护恒生银行的外汇牌价快照数据</div>
+              <div className="fx-section-subtitle">在此录入并维护恒生银行的外汇牌价快照数据</div>
             </div>
           </div>
         </div>
 
-        <div className="fx-manual-card" style={{ padding: '1rem', background: '#f8fafc', borderRadius: '8px', border: '1px solid #e2e8f0', marginBottom: '1.5rem' }}>
+        <div className="fx-manual-card">
           <div className="fx-form-grid">
             <label>日期<input type="date" value={form.rateDate} onChange={(e) => setForm((prev) => ({ ...prev, rateDate: e.target.value }))} /></label>
             <label>CNY 电汇买入<input type="number" min="0" step="0.0001" value={form.cny_tt_buy} onChange={(e) => setForm((prev) => ({ ...prev, cny_tt_buy: e.target.value }))} /></label>
@@ -286,20 +286,20 @@ export function ExchangeRates() {
             <label>JPY 电汇卖出<input type="number" min="0" step="0.0001" value={form.jpy_tt_sell} onChange={(e) => setForm((prev) => ({ ...prev, jpy_tt_sell: e.target.value }))} /></label>
             <label>USD 电汇买入<input type="number" min="0" step="0.0001" value={form.usd_tt_buy} onChange={(e) => setForm((prev) => ({ ...prev, usd_tt_buy: e.target.value }))} /></label>
           </div>
-          <div className="fx-form-actions" style={{ marginTop: '1rem' }}>
+          <div className="fx-form-actions fx-margin-top">
             <button className="btn-action primary" onClick={handleSaveSnapshot} disabled={savingSnapshot}>
               <Save size={16} />{savingSnapshot ? '保存中...' : '保存至系统快照'}
             </button>
-            {snapshotMessage && <span className="fx-form-message" style={{ marginLeft: '1rem' }}>{snapshotMessage}</span>}
+            {snapshotMessage && <span className="fx-form-message fx-margin-left">{snapshotMessage}</span>}
           </div>
         </div>
       </div>
 
       <div className="rate-card fx-history-card">
         <h3>历史汇率记录</h3>
-        <div className="table-wrapper" style={{ marginTop: '1rem', maxHeight: '400px', overflowY: 'auto' }}>
+        <div className="table-wrapper fx-history-wrapper">
           <table className="data-table">
-            <thead style={{ position: 'sticky', top: 0, zIndex: 1, background: '#f8fafc' }}>
+            <thead className="fx-history-thead">
               <tr>
                 <th>日期</th>
                 <th>CNY 买入</th>
@@ -312,7 +312,7 @@ export function ExchangeRates() {
             <tbody>
               {snapshotHistory.length === 0 ? (
                 <tr>
-                  <td colSpan={6} style={{ textAlign: 'center', padding: '1.2rem', color: '#94a3b8' }}>
+                  <td colSpan={6} className="fx-empty-cell">
                     暂无记录
                   </td>
                 </tr>
@@ -333,28 +333,27 @@ export function ExchangeRates() {
         </div>
       </div>
 
-      <div className="rate-card" style={{ background: 'white', padding: '1.5rem', borderRadius: '12px', border: '1px solid #e2e8f0', marginBottom: '1.5rem', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-            <div style={{ padding: '8px', background: '#eff6ff', borderRadius: '8px', color: '#2563eb' }}>
+      <div className="rate-card">
+        <div className="fx-card-header">
+          <div className="fx-header-left-md">
+            <div className="fx-icon-blue">
               <TrendingUp size={20} />
             </div>
             <div>
               <h3 className="fx-section-title">中国外汇交易中心 (CFETS)</h3>
-              <div style={{ fontSize: '0.85rem', color: '#64748b', marginTop: '2px' }}>中国人民银行授权公布的人民币汇率中间价</div>
+              <div className="fx-section-subtitle">中国人民银行授权公布的人民币汇率中间价</div>
             </div>
           </div>
-          <div style={{ textAlign: 'right' }}>
+          <div className="fx-header-right">
             <button
-              className="btn-secondary"
+              className="btn-secondary fx-refresh-btn"
               onClick={refreshAll}
               disabled={loading}
-              style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.4rem 0.8rem', border: '1px solid #e2e8f0', background: 'white', borderRadius: '6px', cursor: 'pointer', marginBottom: '0.25rem' }}
             >
               <RefreshCw size={14} className={loading ? 'spin' : ''} />
               <span>刷新 CFETS</span>
             </button>
-            {lastUpdated && <div style={{ fontSize: '0.75rem', color: '#94a3b8' }}>更新于 {lastUpdated}</div>}
+            {lastUpdated && <div className="fx-last-updated">更新于 {lastUpdated}</div>}
           </div>
         </div>
         {renderTable('cfets')}

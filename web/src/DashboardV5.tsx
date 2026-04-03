@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useState, type ComponentType } from 'react'
+import { useEffect, useMemo, useState, type ComponentType } from 'react'
 import {
   Bar,
   BarChart,
@@ -640,7 +640,7 @@ export function Dashboard({ data, loading, onNotify: _onNotify, onRequireAuth }:
     }
   }).sort((a, b) => b.curr - a.curr), [metric, monthClients, monthTotal])
 
-  const monthShareRows = [...monthRows].sort((a, b) => b.curr - a.curr).slice(0, 10)
+  const monthShareRows = [...monthRows].sort((a, b) => b.curr - a.curr).slice(0, 100)
   const monthDualRows = [...monthRows].sort((a, b) => b.curr - a.curr)
   const monthMomRows = [...monthRows].sort((a, b) => sortable(b.momDelta) - sortable(a.momDelta))
   const monthYoyRows = [...monthRows].sort((a, b) => sortable(b.yoyDelta) - sortable(a.yoyDelta))
@@ -679,7 +679,7 @@ export function Dashboard({ data, loading, onNotify: _onNotify, onRequireAuth }:
     }
   }), [metric, quarterClients, quarterTotal])
 
-  const quarterShareRows = [...quarterRows].sort((a, b) => b.curr - a.curr).slice(0, 10)
+  const quarterShareRows = [...quarterRows].sort((a, b) => b.curr - a.curr).slice(0, 100)
   const quarterDualRows = [...quarterRows].sort((a, b) => b.curr - a.curr)
   const quarterQoqRows = [...quarterRows].sort((a, b) => sortable(b.qoqDelta) - sortable(a.qoqDelta))
   const quarterYoyRows = [...quarterRows].sort((a, b) => sortable(b.yoyDelta) - sortable(a.yoyDelta))
@@ -1252,7 +1252,7 @@ export function Dashboard({ data, loading, onNotify: _onNotify, onRequireAuth }:
   }
 
   const renderQuarterView = () => (
-    <div className="dashboard-quarter-grid" style={{ gridTemplateColumns: 'repeat(2, minmax(0, 1fr))' }}>
+    <div className="dashboard-quarter-grid">
       <div className="chart-card dashboard-main-trend-card dashboard-quarter-main-card">
         <div className="dashboard-card-header">
           <div>

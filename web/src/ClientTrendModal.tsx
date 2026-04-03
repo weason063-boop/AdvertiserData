@@ -5,7 +5,7 @@ import { X, TrendingUp, BarChart3, Search } from 'lucide-react'
 import { Skeleton } from './Skeleton'
 import { EmptyState } from './EmptyState'
 import { apiJson } from './apiClient'
-import './ClientTrendModal.css'
+
 
 interface ClientTrendModalProps {
     clientName: string

@@ -39,8 +39,9 @@ export function ResultsPanel({
   }
 
   return (
-    <div className="table-wrapper results-wrapper">
-      <div className="results-toolbar">
+    <div className="module-card">
+      <div className="table-wrapper results-wrapper">
+        <div className="results-toolbar">
         <div className="results-meta">
           共 {resultsTotalRows} 条，当前第 {resultsPage}/{resultsTotalPages} 页
         </div>
@@ -100,6 +101,7 @@ export function ResultsPanel({
             ))}
           </tbody>
         </table>
+      </div>
       </div>
     </div>
   )

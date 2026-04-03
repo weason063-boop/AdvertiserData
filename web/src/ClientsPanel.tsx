@@ -65,8 +65,8 @@ export function ClientsPanel({
         </div>
       )}
 
-      <div className="table-wrapper clients-table-card">
-        <div className="data-table-container clients-table-wrap">
+      <div className="module-card">
+        <div className="table-wrapper clients-table-wrap">
           <table className="data-table clients-table">
             <thead>
               <tr>

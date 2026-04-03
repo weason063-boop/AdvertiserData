@@ -402,7 +402,7 @@ export function LatestMonthClientsPanel({
   return (
     <section className="latest-month-section">
       <div className="ledger-page-shell">
-        <div className="table-wrapper latest-month-card">
+        <div className="module-card">
           <div className="latest-month-toolbar">
             <div className="latest-month-filter-grid">
             <label className="latest-month-filter-field" htmlFor="ledger-filter-client-name">
@@ -517,7 +517,8 @@ export function LatestMonthClientsPanel({
             description="请先完成月度计算后再查看账单明细。"
           />
         ) : (
-          <div ref={tableContainerRef} className="data-table-container latest-month-table-wrap">
+          <div className="table-wrapper">
+            <div ref={tableContainerRef} className="data-table-container latest-month-table-wrap">
             <table className="data-table latest-month-table">
               <thead>
                 <tr>
@@ -675,6 +676,7 @@ export function LatestMonthClientsPanel({
                 </div>
               </div>
             )}
+          </div>
           </div>
         )}
         </div>
