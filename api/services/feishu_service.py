@@ -98,17 +98,16 @@ class FeishuService:
                 
         type_idx = get_col_index('业务类型')
         dept_idx = get_col_index('执行部门')
-        entity_idx = get_col_index('客户主体')
-        
-        # Find Fee Clause column
+        entity_idx = get_col_index('主体')  # Match '主体' or '客户主体'
         term_idx = get_col_index('服务费')
+        payment_term_idx = get_col_index('账期')
+        
         if term_idx == -1:
             return {"status": "error", "message": "表格缺少 '服务费' 条款列，无法同步"}
 
         logger.info(
-            "Feishu fee clause column index=%s, header=%s",
-            term_idx,
-            headers[term_idx] if term_idx < len(headers) else None
+            "Feishu column indices: name=%s, entity=%s, payment_term=%s, fee=%s",
+            name_idx, entity_idx, payment_term_idx, term_idx
         )
         
         data_to_migrate = []
@@ -131,6 +130,7 @@ class FeishuService:
                 'department': get_val(dept_idx),
                 'entity': get_val(entity_idx),
                 'fee_clause': get_val(term_idx),
+                'payment_term': get_val(payment_term_idx),
                 '_source_row_index': row_index,
             }
             if len(data_to_migrate) < 5:

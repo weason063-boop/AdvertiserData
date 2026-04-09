@@ -315,6 +315,7 @@ def get_all_clients(search: str = None, db: Session = None) -> List[Dict]:
             {
                 "id": r.id, "name": r.name, "business_type": r.business_type,
                 "department": r.department, "entity": r.entity, "fee_clause": r.fee_clause,
+                "payment_term": r.payment_term,
                 "created_at": r.created_at, "updated_at": r.updated_at
             }
             for r in results
@@ -335,6 +336,7 @@ def get_client(client_id: int, db: Session = None) -> Optional[Dict]:
             return {
                 "id": r.id, "name": r.name, "business_type": r.business_type,
                 "department": r.department, "entity": r.entity, "fee_clause": r.fee_clause,
+                "payment_term": r.payment_term,
                 "created_at": r.created_at, "updated_at": r.updated_at
             }
         return None
@@ -354,6 +356,7 @@ def get_client_by_name(name: str, db: Session = None) -> Optional[Dict]:
             return {
                 "id": r.id, "name": r.name, "business_type": r.business_type,
                 "department": r.department, "entity": r.entity, "fee_clause": r.fee_clause,
+                "payment_term": r.payment_term,
                 "created_at": r.created_at, "updated_at": r.updated_at
             }
         return None
@@ -380,7 +383,7 @@ def update_client(client_id: int, fee_clause: str, db: Session = None) -> bool:
             db.close()
 
 def upsert_client(name: str, business_type: str = None, department: str = None, 
-                  entity: str = None, fee_clause: str = None, db: Session = None) -> int:
+                  entity: str = None, fee_clause: str = None, payment_term: str = None, db: Session = None) -> int:
     """插入或更新客户（完全覆盖模式）"""
     should_close = False
     if db is None:
@@ -393,6 +396,7 @@ def upsert_client(name: str, business_type: str = None, department: str = None,
             if department is not None: r.department = department
             if entity is not None: r.entity = entity
             if fee_clause is not None: r.fee_clause = fee_clause
+            if payment_term is not None: r.payment_term = payment_term
             r.updated_at = datetime.now()
             client_id = r.id
         else:
@@ -401,7 +405,8 @@ def upsert_client(name: str, business_type: str = None, department: str = None,
                 business_type=business_type,
                 department=department,
                 entity=entity,
-                fee_clause=fee_clause
+                fee_clause=fee_clause,
+                payment_term=payment_term
             )
             db.add(new_client)
             db.flush()  # To get the ID
@@ -612,5 +617,3 @@ def list_operation_audit_logs(
             }
         )
     return total_count, results
-
-

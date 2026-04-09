@@ -71,14 +71,16 @@ export function ClientsPanel({
             <thead>
               <tr>
                 <th>客户名称</th>
+                <th>主体</th>
                 <th>业务类型</th>
+                <th>账期</th>
                 <th>服务费条款</th>
                 <th>操作</th>
               </tr>
             </thead>
             <tbody>
               {loading && (
-                <tr><td colSpan={4} className="loading">加载中...</td></tr>
+                <tr><td colSpan={6} className="loading">加载中...</td></tr>
               )}
               {isAddingClient && canClientWrite && (
                 <tr className="editing-row">
@@ -124,7 +126,9 @@ export function ClientsPanel({
               {clients.map(client => (
                 <tr key={client.id} className={editingClient?.id === client.id ? 'editing-row' : ''}>
                   <td className="cell-name">{client.name}</td>
+                  <td className="cell-entity">{client.entity || '—'}</td>
                   <td className="cell-type">{client.business_type || '—'}</td>
+                  <td className="cell-payment-term">{client.payment_term || '—'}</td>
                   <td className="cell-clause">
                     {editingClient?.id === client.id ? (
                       <textarea

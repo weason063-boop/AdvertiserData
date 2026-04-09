@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """Excel/Feishu contract migration helpers."""
 
 from __future__ import annotations
@@ -134,6 +134,7 @@ def migrate_feishu_contract_lines(
                 "department": _to_text(row.get("department")),
                 "entity": _to_text(row.get("entity")),
                 "fee_clause": _to_text(row.get("fee_clause")),
+                "payment_term": _to_text(row.get("payment_term")),
                 "_source_row_index": int(source_row_index),
             }
             inserted_rows.append(line_payload)
@@ -149,6 +150,7 @@ def migrate_feishu_contract_lines(
                     department=line_payload["department"],
                     entity=line_payload["entity"],
                     fee_clause=line_payload["fee_clause"],
+                    payment_term=line_payload["payment_term"],
                 )
             )
 
@@ -160,6 +162,7 @@ def migrate_feishu_contract_lines(
                 department=chosen.get("department") or "",
                 entity=chosen.get("entity") or "",
                 fee_clause=chosen.get("fee_clause") or "",
+                payment_term=chosen.get("payment_term") or "",
                 db=db,
             )
 

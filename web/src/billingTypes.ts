@@ -5,6 +5,7 @@ export interface Client {
   department: string
   entity: string
   fee_clause: string
+  payment_term: string
   updated_at: string
 }
 
@@ -59,6 +60,7 @@ export interface ClientProfile {
   department: string | null
   entity: string | null
   fee_clause: string | null
+  payment_term: string | null
 }
 
 export interface ClientHistoryRow extends BillingDetailMetrics {
