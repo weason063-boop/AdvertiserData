@@ -380,14 +380,30 @@ class CalculationService:
             errors="coerce",
         ).fillna(0.0)
 
-        # 预估消耗为 0 时，服务费和固定服务费都应为 0（无消耗则无费用）
-        zero_consumption_mask = merged["_estimate_consumption"].abs() < 1e-9
-        merged.loc[zero_consumption_mask, "_estimate_service_fee"] = 0.0
-        merged.loc[zero_consumption_mask, "_estimate_fixed_service_fee"] = 0.0
+        merged["_estimate_service_fee"] = pd.to_numeric(
+            merged.get("_estimate_service_fee"),
+            errors="coerce",
+        ).fillna(0.0)
+        merged["_estimate_fixed_service_fee"] = pd.to_numeric(
+            merged.get("_estimate_fixed_service_fee"),
+            errors="coerce",
+        ).fillna(0.0)
 
-        # 只有代投类型才计算固定服务费，流水类型固定服务费为 0
-        not_daitou_mask = ~merged["服务类型"].str.contains("代投", na=False)
-        merged.loc[not_daitou_mask, "_estimate_fixed_service_fee"] = 0.0
+        # 预估消耗为 0 时：按母公司汇总，如果该客户当月总预估消耗为 0，则预估服务费/固定服务费皆为 0
+        client_totals = merged.groupby("_contract_client")["_estimate_consumption"].sum()
+        zero_clients = client_totals[client_totals.abs() < 1e-9].index
+        
+        zero_mask = merged["_contract_client"].isin(zero_clients)
+        merged.loc[zero_mask, "_estimate_service_fee"] = 0.0
+        merged.loc[zero_mask, "_estimate_fixed_service_fee"] = 0.0
+
+        # 新增判断：如果该客户本月「完全没有」涉及“代投”的任何行，也抹除固定服务费
+        daitou_mask = merged["服务类型"].str.contains("代投", na=False)
+        daitou_clients = merged.loc[daitou_mask, "_contract_client"].unique()
+        no_daitou_mask = ~merged["_contract_client"].isin(daitou_clients)
+        merged.loc[no_daitou_mask, "_estimate_fixed_service_fee"] = 0.0
+
+        # （不再在结果构建层按行粗暴抹除固费，避免误删引擎层面已经去重后恰好赋给了某个流水行的全局固定费）
 
         return pd.DataFrame(
             {
