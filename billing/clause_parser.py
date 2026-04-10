@@ -80,6 +80,12 @@ def _extract_media_segment(line, target_keywords):
                 continue
             idx = line_lower.find(kw.lower(), target_kw_end)
             if 0 <= idx < next_media_pos:
+                # 检查 target_kw_end 和 idx 之间是否只有标点/分隔符
+                text_between = line[target_kw_end:idx]
+                clean_text = re.sub(r'[\s\+＋、，,。/\|&和及与]', '', text_between)
+                if not clean_text:
+                    # 如果只有分隔符，说明它们是紧连着的并排媒介（例: GG、TT），属于同一费率组，不应在此截断
+                    continue
                 next_media_pos = idx
 
     segment = line[target_pos:next_media_pos].strip()
