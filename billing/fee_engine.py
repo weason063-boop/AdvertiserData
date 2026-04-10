@@ -420,7 +420,15 @@ def calculate_service_fees(
 
         service_fees.append(_round2(fee) if fee > 0 else None)
 
-        is_per_media = any(kw in str(clause) for kw in ["含", "各", "单渠道", "单个渠道", "每个"])
+        from billing.clause_parser import MEDIA_KEYWORDS
+        
+        contains_ge_han = any(kw in str(clause) for kw in ["含", "各", "单渠道", "单个渠道", "每个"])
+        contains_heji = any(kw in str(clause) for kw in ["合计", "总体", "一共"])
+        
+        media_aliases = MEDIA_KEYWORDS.get(media, [media])
+        media_in_clause = any(a.lower() in str(clause).lower() for a in media_aliases)
+        
+        is_per_media = (contains_ge_han or media_in_clause) and not contains_heji
         dedup_key = (customer_str, media) if is_per_media else customer_str
 
         if fixed > 0 and dedup_key not in customer_fixed_fee_filled:
