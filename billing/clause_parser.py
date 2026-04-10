@@ -48,6 +48,46 @@ for _k_list in MEDIA_KEYWORDS.values():
     ALL_MEDIA_KEYWORDS.update(_k_list)
 
 
+def _extract_media_segment(line, target_keywords):
+    """
+    当一行包含多个媒介关键词时，提取目标媒介所属的子段落。
+    避免跨媒介正则误匹配。
+
+    例如: line = "GG 1000+FB 1000+TT 500+10%"
+      target_keywords=['FB','Facebook','Meta'] → "FB 1000"
+      target_keywords=['TT','TikTok']          → "TT 500+10%"
+    """
+    line_lower = line.lower()
+    target_kw_set = {kw.lower() for kw in target_keywords}
+
+    # 找到目标媒介关键词在行中的最早位置
+    target_pos = len(line)
+    target_kw_end = target_pos
+    for kw in target_keywords:
+        idx = line_lower.find(kw.lower())
+        if 0 <= idx < target_pos:
+            target_pos = idx
+            target_kw_end = idx + len(kw)
+
+    if target_pos >= len(line):
+        return None
+
+    # 找到目标关键词之后、最近的其他媒介关键词位置
+    next_media_pos = len(line)
+    for kw_list in MEDIA_KEYWORDS.values():
+        for kw in kw_list:
+            if kw.lower() in target_kw_set:
+                continue
+            idx = line_lower.find(kw.lower(), target_kw_end)
+            if 0 <= idx < next_media_pos:
+                next_media_pos = idx
+
+    segment = line[target_pos:next_media_pos].strip()
+    # 去掉尾部用作段落分隔的 +
+    segment = segment.rstrip('+＋').strip()
+    return segment if segment else None
+
+
 # =============================================================================
 # 时间感知条款提取
 # =============================================================================
@@ -389,39 +429,54 @@ def parse_fee_clause(
         if '代投' in line and '流水' not in line and service_type == '流水':
             continue
 
+        # 多媒介行段落提取：当同一行包含目标媒介和其他媒介时，
+        # 仅提取目标媒介所属的子段落，避免跨媒介正则误匹配
+        match_text = line
+        if contains_target:
+            _has_other_in_line = any(
+                kw.lower() in line.lower()
+                for kw in ALL_MEDIA_KEYWORDS
+                if kw not in keywords
+            )
+            if _has_other_in_line:
+                segment = _extract_media_segment(line, keywords)
+                if segment:
+                    match_text = segment
+
         # P1: 固定+阶梯
-        fixed_plus_tier = re.search(r'固定\s*(\d+)\s*\+', line)
+        fixed_plus_tier = re.search(r'固定\s*(\d+)\s*\+', match_text)
         if fixed_plus_tier:
             fixed_val = float(fixed_plus_tier.group(1))
-            tier_result = parse_tiered_from_text(line, check_consumption)
+            tier_result = parse_tiered_from_text(match_text, check_consumption)
             if tier_result:
                 return (tier_result[0], fixed_val + tier_result[1])
             return (0.0, fixed_val)
 
         # P2: 合计基础固定+比例
-        combined_fixed_pct = re.search(r'[合计基础]+\s*(\d+(?:\.\d+)?)\s*[+＋]\s*(?:消耗\s*[*×]?\s*)?(\d+(?:\.\d+)?)\s*%', line)
+        combined_fixed_pct = re.search(r'[合计基础]+\s*(\d+(?:\.\d+)?)\s*[+＋]\s*(?:消耗\s*[*×]?\s*)?(\d+(?:\.\d+)?)\s*%', match_text)
         if combined_fixed_pct:
             return (float(combined_fixed_pct.group(2)) / 100, float(combined_fixed_pct.group(1)))
 
         # P3: 各X+比例
-        per_media_fixed_pct = re.search(r'各\s*(\d+)\s*[+＋]\s*(?:消耗\s*[*×]?\s*)?(\d+(?:\.\d+)?)\s*%', line)
+        per_media_fixed_pct = re.search(r'各\s*(\d+)\s*[+＋]\s*(?:消耗\s*[*×]?\s*)?(\d+(?:\.\d+)?)\s*%', match_text)
         if per_media_fixed_pct:
             return (float(per_media_fixed_pct.group(2)) / 100, float(per_media_fixed_pct.group(1)))
 
         # P4: 阶梯费率
-        if re.search(r'[<>≤≥＜＞]\s*X|X\s*[<>≤≥＜＞]', line):
-            # 阶梯表达式可能被分号/逗号拆开，所以传递完整条款而非行片段
-            tier_result = parse_tiered_from_text(clause, check_consumption)
+        if re.search(r'[<>≤≥＜＞]\s*X|X\s*[<>≤≥＜＞]', match_text):
+            # 多媒介行时仅解析当前媒介段落；单媒介行保持原逻辑使用完整条款
+            tier_source = match_text if match_text != line else clause
+            tier_result = parse_tiered_from_text(tier_source, check_consumption)
             if tier_result:
                 return tier_result
 
         # P5: 范围固定费
-        range_fixed = re.findall(r'(\d+(?:\.\d+)?)[wW万]?\s*[<＜]\s*X\s*[≤＜<]\s*(\d+(?:\.\d+)?)[wW万]?\s*[，,]\s*(\d+)(?!\s*%)', line)
+        range_fixed = re.findall(r'(\d+(?:\.\d+)?)[wW万]?\s*[<＜]\s*X\s*[≤＜<]\s*(\d+(?:\.\d+)?)[wW万]?\s*[，,]\s*(\d+)(?!\s*%)', match_text)
         if range_fixed:
             for low_s, high_s, val_s in range_fixed:
                 low = float(low_s)
                 high = float(high_s)
-                if 'w' in line.lower() or '万' in line:
+                if 'w' in match_text.lower() or '万' in match_text:
                     low *= 10000
                     high *= 10000
                 val = float(val_s)
@@ -429,23 +484,23 @@ def parse_fee_clause(
                     return (0.0, val)
 
         # P6: 金额+百分比
-        amt_pct = re.search(r'(?:^|[^0-9])(\d+)\s*[+＋]\s*(?:消耗\s*[*×]?\s*)?(\d+(?:\.\d+)?)\s*%', line)
+        amt_pct = re.search(r'(?:^|[^0-9])(\d+)\s*[+＋]\s*(?:消耗\s*[*×]?\s*)?(\d+(?:\.\d+)?)\s*%', match_text)
         if amt_pct:
             pos = amt_pct.start(1)
-            if pos > 0 and line[pos-1] in ['w', 'W', '万']:
+            if pos > 0 and match_text[pos-1] in ['w', 'W', '万']:
                 pass
             else:
                 return (float(amt_pct.group(2)) / 100, float(amt_pct.group(1)))
 
         # P7: 直接百分比
-        has_tier_indicator = bool(re.search(r'[<>≤≥＜＞]|超过|[-~−–]\d+[wW万]', line))
+        has_tier_indicator = bool(re.search(r'[<>≤≥＜＞]|超过|[-~−–]\d+[wW万]', match_text))
         if not has_tier_indicator:
-            direct_pct = re.findall(r'(\d+(?:\.\d+)?)\s*%', line)
+            direct_pct = re.findall(r'(\d+(?:\.\d+)?)\s*%', match_text)
             if direct_pct:
                 return (float(direct_pct[0]) / 100, 0.0)
 
         # P8: 范围固定费（简写）
-        range_simple = re.search(r'(\d+)\s*[-~−–]\s*(\d+)[wW万]\s*[，,]?\s*(?:服务费)?\s*(\d+)(?!\s*%)', line)
+        range_simple = re.search(r'(\d+)\s*[-~−–]\s*(\d+)[wW万]\s*[，,]?\s*(?:服务费)?\s*(\d+)(?!\s*%)', match_text)
         if range_simple:
             low = float(range_simple.group(1))
             high = float(range_simple.group(2)) * 10000
@@ -454,9 +509,18 @@ def parse_fee_clause(
                 return (0.0, val)
 
         # P9: /月 固定费
-        monthly = re.search(r'(\d+)\s*/\s*月', line)
+        monthly = re.search(r'(\d+)\s*/\s*月', match_text)
         if monthly and contains_target:
             return (0.0, float(monthly.group(1)))
+
+        # P10: 独立固定费（从多媒介段落中提取的纯数字固定费，如 "FB 1000"）
+        if contains_target and match_text != line:
+            if not re.search(r'%|/\s*月|[<>≤≥＜＞]', match_text):
+                standalone_fixed = re.search(r'(\d+(?:\.\d+)?)\s*$', match_text)
+                if standalone_fixed:
+                    val = float(standalone_fixed.group(1))
+                    if val > 0:
+                        return (0.0, val)
 
     # 全局回退模式
     if '单个渠道' in clause or '单渠道' in clause:
