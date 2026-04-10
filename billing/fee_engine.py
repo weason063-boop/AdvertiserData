@@ -420,7 +420,7 @@ def calculate_service_fees(
 
         service_fees.append(_round2(fee) if fee > 0 else None)
 
-        is_per_media = any(kw in str(clause) for kw in ["含", "各"])
+        is_per_media = any(kw in str(clause) for kw in ["含", "各", "单渠道", "单个渠道", "每个"])
         dedup_key = (customer_str, media) if is_per_media else customer_str
 
         if fixed > 0 and dedup_key not in customer_fixed_fee_filled:
