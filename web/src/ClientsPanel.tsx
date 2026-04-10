@@ -95,13 +95,18 @@ export function ClientsPanel({
                     />
                   </td>
                   <td className="cell-type">
-                    <input
+                    <select
                       className="edit-clause-input"
                       style={{ height: '36px' }}
                       value={newClientData.business_type}
                       onChange={e => onNewClientDataChange({ business_type: e.target.value })}
-                      placeholder="输入业务类型"
-                    />
+                    >
+                      <option value="">请选择业务类型</option>
+                      <option value="广告">广告</option>
+                      <option value="KOL">KOL</option>
+                      <option value="视觉">视觉</option>
+                      <option value="TTS">TTS</option>
+                    </select>
                   </td>
                   <td className="cell-clause">
                     <textarea

@@ -380,6 +380,15 @@ class CalculationService:
             errors="coerce",
         ).fillna(0.0)
 
+        # 预估消耗为 0 时，服务费和固定服务费都应为 0（无消耗则无费用）
+        zero_consumption_mask = merged["_estimate_consumption"].abs() < 1e-9
+        merged.loc[zero_consumption_mask, "_estimate_service_fee"] = 0.0
+        merged.loc[zero_consumption_mask, "_estimate_fixed_service_fee"] = 0.0
+
+        # 只有代投类型才计算固定服务费，流水类型固定服务费为 0
+        not_daitou_mask = ~merged["服务类型"].str.contains("代投", na=False)
+        merged.loc[not_daitou_mask, "_estimate_fixed_service_fee"] = 0.0
+
         return pd.DataFrame(
             {
                 "母公司": merged["母公司"],
