@@ -3,7 +3,7 @@
 数据库操作模块 (SQLAlchemy ORM 版)
 """
 from typing import Any, List, Dict, Optional
-from sqlalchemy import create_engine, desc, func, and_, inspect, text
+from sqlalchemy import create_engine, desc, func, and_, or_, inspect, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker, Session
 from pathlib import Path
@@ -308,8 +308,14 @@ def get_all_clients(search: str = None, db: Session = None) -> List[Dict]:
         should_close = True
     try:
         query = db.query(Client)
-        if search:
-            query = query.filter(Client.name.like(f"%{search}%"))
+        if search and search.strip():
+            keyword = f"%{search.strip()}%"
+            query = query.filter(
+                or_(
+                    Client.name.like(keyword),
+                    Client.fee_clause.like(keyword),
+                )
+            )
         results = query.order_by(Client.name).all()
         return [
             {

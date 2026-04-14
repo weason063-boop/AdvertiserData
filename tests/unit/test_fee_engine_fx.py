@@ -88,6 +88,148 @@ def test_summary_follows_converted_spend_invariant(tmp_path, monkeypatch):
     assert pytest.approx(result["汇总"].iloc[0], rel=1e-4) == 1176.38
 
 
+def test_summary_includes_dst_column_without_nbsp(tmp_path, monkeypatch):
+    src = tmp_path / "2026年1月消耗明细.xlsx"
+    out = tmp_path / "out.xlsx"
+
+    usd_df = pd.DataFrame(_base_rows())
+    usd_df["代投消耗"] = 100
+    usd_df["监管运营费用/数字服务税(DST)"] = 1.23
+
+    with pd.ExcelWriter(src) as writer:
+        usd_df.to_excel(writer, sheet_name="USD", index=False)
+
+    monkeypatch.setattr("billing.fee_engine.load_contract_terms", lambda _p: {"测试客户A": "Google 10%"})
+
+    calculate_service_fees(
+        str(src),
+        contract_path="dummy.xlsx",
+        output_path=str(out),
+        use_db=False,
+        calculation_date="2026年1月",
+        exchange_context=_exchange_context(),
+    )
+
+    result = pd.read_excel(out)
+    # net(100) + service_fee(10) + dst(1.23) = 111.23
+    assert pytest.approx(result["汇总"].iloc[0], rel=1e-4) == 111.23
+
+
+def test_result_header_normalization_handles_variant_columns(tmp_path, monkeypatch):
+    src = tmp_path / "2026年1月消耗明细.xlsx"
+    out = tmp_path / "out.xlsx"
+
+    usd_df = pd.DataFrame(
+        [
+            {
+                "母公司 ": "测试客户A",
+                "媒介 ": "Google",
+                "服务类型 ": "代投",
+                "代投消耗 ": 0,
+                "流水消耗 ": 0,
+                "汇总纯消耗": 100,
+                "coupon": 2,
+                "监管运营费用/数字服务税 (DST)\xa0": 1.23,
+            }
+        ]
+    )
+
+    with pd.ExcelWriter(src) as writer:
+        usd_df.to_excel(writer, sheet_name="USD", index=False)
+
+    monkeypatch.setattr("billing.fee_engine.load_contract_terms", lambda _p: {"测试客户A": "Google 10%"})
+
+    calculate_service_fees(
+        str(src),
+        contract_path="dummy.xlsx",
+        output_path=str(out),
+        use_db=False,
+        calculation_date="2026年1月",
+        exchange_context=_exchange_context(),
+    )
+
+    result = pd.read_excel(out)
+    assert "汇总纯花费" in result.columns
+    assert "汇总纯消耗" not in result.columns
+    assert "Coupon" in result.columns
+    assert "监管运营费用/数字服务税(DST)" in result.columns
+    # net(100) + coupon(2) + dst(1.23) = 103.23
+    assert pytest.approx(result["汇总"].iloc[0], rel=1e-4) == 103.23
+
+
+def test_summary_includes_dst_when_header_is_short_alias(tmp_path, monkeypatch):
+    src = tmp_path / "2026年1月消耗明细.xlsx"
+    out = tmp_path / "out.xlsx"
+
+    usd_df = pd.DataFrame(
+        [
+            {
+                "母公司": "测试客户A",
+                "媒介": "Google",
+                "服务类型": "代投",
+                "代投消耗": 100,
+                "流水消耗": 0,
+                "监管费": 2.5,
+            }
+        ]
+    )
+
+    with pd.ExcelWriter(src) as writer:
+        usd_df.to_excel(writer, sheet_name="USD", index=False)
+
+    monkeypatch.setattr("billing.fee_engine.load_contract_terms", lambda _p: {"测试客户A": "Google 10%"})
+
+    calculate_service_fees(
+        str(src),
+        contract_path="dummy.xlsx",
+        output_path=str(out),
+        use_db=False,
+        calculation_date="2026年1月",
+        exchange_context=_exchange_context(),
+    )
+
+    result = pd.read_excel(out)
+    # net(100) + service_fee(10) + dst(2.5) = 112.5
+    assert pytest.approx(result["汇总"].iloc[0], rel=1e-4) == 112.5
+
+
+def test_header_normalization_prefers_nonzero_variant_numeric_value(tmp_path, monkeypatch):
+    src = tmp_path / "2026年1月消耗明细.xlsx"
+    out = tmp_path / "out.xlsx"
+
+    usd_df = pd.DataFrame(
+        [
+            {
+                "母公司": "测试客户A",
+                "媒介": "Google",
+                "服务类型": "代投",
+                "代投消耗": 100,
+                "流水消耗": 0,
+                "监管运营费用/数字服务税(DST)": 0,
+                "监管费": 3.3,
+            }
+        ]
+    )
+
+    with pd.ExcelWriter(src) as writer:
+        usd_df.to_excel(writer, sheet_name="USD", index=False)
+
+    monkeypatch.setattr("billing.fee_engine.load_contract_terms", lambda _p: {"测试客户A": "Google 10%"})
+
+    calculate_service_fees(
+        str(src),
+        contract_path="dummy.xlsx",
+        output_path=str(out),
+        use_db=False,
+        calculation_date="2026年1月",
+        exchange_context=_exchange_context(),
+    )
+
+    result = pd.read_excel(out)
+    # net(100) + service_fee(10) + dst(3.3) = 113.3
+    assert pytest.approx(result["汇总"].iloc[0], rel=1e-4) == 113.3
+
+
 def test_jpy_sheet_converts_with_hangseng_snapshot(tmp_path, monkeypatch):
     src = tmp_path / "consumption.xlsx"
     out = tmp_path / "out.xlsx"

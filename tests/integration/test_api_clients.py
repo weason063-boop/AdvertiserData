@@ -46,6 +46,22 @@ def test_get_clients(client, db_session):
     _clear_auth_override()
 
 
+def test_get_clients_supports_searching_fee_clause(client, db_session):
+    db_session.add(Client(name="Only Name Match A", fee_clause="返点 2% + 固定 100"))
+    db_session.add(Client(name="Only Name Match B", fee_clause="监管费 3.5%"))
+    db_session.commit()
+
+    _override_auth(FULL_PERMISSION_USER)
+    response = client.get("/api/clients/?search=监管费 3.5")
+
+    assert response.status_code == 200
+    data = response.json()
+    names = [c["name"] for c in data["clients"]]
+    assert "Only Name Match B" in names
+    assert "Only Name Match A" not in names
+    _clear_auth_override()
+
+
 def test_update_client_clause(client, db_session):
     target = Client(name="Update Me", fee_clause="Old Clause")
     db_session.add(target)

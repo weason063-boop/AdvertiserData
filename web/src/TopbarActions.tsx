@@ -80,10 +80,10 @@ export function TopbarActions({
               <Search size={16} className="search-icon" />
               <input
                 type="text"
-                placeholder="搜索客户..."
+                placeholder="搜索客户/条款关键词..."
                 value={search}
                 onChange={(e) => onSearchChange(e.target.value)}
-                onKeyPress={onSearchKeyPress}
+                onKeyDown={onSearchKeyPress}
               />
             </div>
             {canClientWrite && (

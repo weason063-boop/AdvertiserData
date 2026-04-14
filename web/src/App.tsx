@@ -53,6 +53,22 @@ const getStoredActiveTab = (): Tab => {
   return isTab(stored) ? stored : 'dashboard'
 }
 
+const normalizeSearchText = (value: unknown): string =>
+  String(value ?? '')
+    .toLowerCase()
+    .replace(/\s+/g, '')
+
+const matchesClientSearch = (client: Client, keyword: string): boolean => {
+  const token = normalizeSearchText(keyword)
+  if (!token) return true
+  return [
+    client.name,
+    client.fee_clause,
+    client.entity,
+    client.business_type,
+  ].some((field) => normalizeSearchText(field).includes(token))
+}
+
 function App() {
   const [activeTab, setActiveTab] = useState<Tab>(() => getStoredActiveTab())
   const [clients, setClients] = useState<Client[]>([])
@@ -276,14 +292,28 @@ function App() {
     },
   })
 
-  const loadClients = async () => {
+  const loadClients = async (keyword: string = search) => {
     setLoading(true)
     try {
-      const path = search
-        ? `/api/clients?search=${encodeURIComponent(search)}`
-        : '/api/clients'
-      const { data } = await apiJson<{ clients?: Client[] }>(path)
-      setClients(data.clients || [])
+      const normalizedKeyword = keyword.trim()
+      if (!normalizedKeyword) {
+        const { data } = await apiJson<{ clients?: Client[] }>('/api/clients')
+        setClients(data.clients || [])
+        return
+      }
+
+      const { data } = await apiJson<{ clients?: Client[] }>(
+        `/api/clients?search=${encodeURIComponent(normalizedKeyword)}`,
+      )
+      let nextClients = data.clients || []
+
+      // Backward-compatible fallback: if backend search is stale, filter locally.
+      if (nextClients.length === 0) {
+        const { data: allData } = await apiJson<{ clients?: Client[] }>('/api/clients')
+        nextClients = (allData.clients || []).filter((item) => matchesClientSearch(item, normalizedKeyword))
+      }
+
+      setClients(nextClients)
     } catch (error: unknown) {
       if (isApiHttpError(error) && error.status === 401) {
         handleUnauthorized()
@@ -403,6 +433,14 @@ function App() {
     loadLatestResult()
     loadLatestEstimateResult()
   }, [isAuthenticated])
+
+  useEffect(() => {
+    if (!isAuthenticated || activeTab !== 'clients') return
+    const timer = window.setTimeout(() => {
+      void loadClients(search)
+    }, 250)
+    return () => window.clearTimeout(timer)
+  }, [search, activeTab, isAuthenticated])
 
   useEffect(() => {
     window.localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, activeTab)
@@ -962,8 +1000,12 @@ function App() {
     }
   }
 
-  const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') loadClients()
+  const handleKeyPress = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key !== 'Enter') return
+    if ((e.nativeEvent as KeyboardEvent).isComposing) return
+    const value = e.currentTarget.value
+    setSearch(value)
+    void loadClients(value)
   }
 
   const formatNumber = (val: string | number) => {

@@ -368,6 +368,38 @@ class TestDashboardService:
         assert alpha["dst"] == 0.3
         assert alpha["total"] == 51.3
 
+    def test_prepare_result_month_batches_total_includes_dst_keyword_variant_header(self, db_session):
+        service = CalculationService()
+        source = pd.DataFrame(
+            [
+                {
+                    "母公司 ": "Alpha",
+                    "预付/后付 ": "预付",
+                    "服务类型": "代投",
+                    "流水消耗": 80,
+                    "代投消耗": 20,
+                    "服务费 ": 2,
+                    "固定服务费": 1,
+                    "coupon": -0.5,
+                    "监管费（DST）": 3.2,
+                    "月份归属 ": "2026-02-01",
+                }
+            ]
+        )
+
+        batches = service._prepare_result_month_batches("2026年2月测试_results.xlsx", source)
+        month, batch_df = batches[0]
+        service._upsert_monthly_stats(month, batch_df, db=db_session)
+
+        result = DashboardService().get_latest_month_clients(db=db_session)
+        alpha = next(item for item in result["rows"] if item["client_name"] == "Alpha")
+
+        assert alpha["flow_consumption"] == 80.0
+        assert alpha["managed_consumption"] == 20.0
+        assert alpha["dst"] == 3.2
+        assert alpha["coupon"] == -0.5
+        assert alpha["total"] == 105.7
+
     def test_client_trend_summary_uses_visible_12_month_window(self, db_session):
         upsert_client_stats_batch(
             "1970-01",

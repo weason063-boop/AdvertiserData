@@ -124,14 +124,6 @@ export function TaskHistoryPanel({
 
   return (
     <div className="task-history-card">
-      <div className="task-history-toolbar">
-        <div className="task-history-title-block">
-          <h3>任务历史</h3>
-          <p>用于排查谁在什么时间执行了什么动作</p>
-        </div>
-        <div className="task-history-meta">{loading ? '加载中...' : `已加载 ${items.length} 条`}</div>
-      </div>
-
       <div className="task-history-controls">
         <div className="task-history-filters">
           <label className="task-history-field task-history-input">

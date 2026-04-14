@@ -1781,40 +1781,7 @@ th {
   padding: 1.5rem;
   display: flex;
   flex-direction: column;
-  gap: 1.1rem;
-}
-
-.task-history-toolbar {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 0.8rem;
-  padding: 0.9rem 1rem 0.75rem;
-  border-bottom: 1px solid var(--border-subtle);
-  background: #fff;
-}
-
-.task-history-title-block h3 {
-  margin: 0;
-  font-size: 1rem;
-  font-weight: 700;
-  color: var(--text-main);
-}
-
-.task-history-title-block p {
-  margin: 0.25rem 0 0;
-  font-size: 0.8rem;
-  color: var(--text-muted);
-}
-
-.task-history-meta {
-  font-size: 0.78rem;
-  color: var(--text-muted);
-  border: 1px solid var(--border-subtle);
-  background: var(--bg-page);
-  border-radius: 999px;
-  padding: 0.25rem 0.62rem;
-  white-space: nowrap;
+  gap: 0.9rem;
 }
 
 .task-history-controls {
@@ -1822,9 +1789,9 @@ th {
   align-items: flex-start;
   justify-content: space-between;
   gap: 0.75rem;
-  padding: 0.72rem 1rem 0.8rem;
+  padding: 0.4rem 0 0.8rem;
   border-bottom: 1px solid var(--border-subtle);
-  background: linear-gradient(180deg, #ffffff 0%, #fafcff 100%);
+  background: transparent;
 }
 
 .task-history-filters {
@@ -1998,11 +1965,6 @@ th {
 }
 
 @media (max-width: 900px) {
-  .task-history-toolbar {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
   .task-history-filters {
     width: 100%;
   }
@@ -3079,7 +3041,36 @@ th {
   height: fit-content;
 }
 
-/* Table bleeds to card edges — standard SaaS data-grid pattern */
+/* Keep clients table scrollable inside the constrained module card */
+.table-wrapper.clients-table-wrap {
+  overflow-y: scroll;
+  overflow-x: auto;
+  flex: 1 1 auto;
+  max-height: 100%;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: #94a3b8 #f1f5f9;
+}
+
+.table-wrapper.clients-table-wrap::-webkit-scrollbar {
+  width: 12px;
+}
+
+.table-wrapper.clients-table-wrap::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+
+.table-wrapper.clients-table-wrap::-webkit-scrollbar-thumb {
+  background: #94a3b8;
+  border-radius: 999px;
+  border: 3px solid #f1f5f9;
+}
+
+.table-wrapper.clients-table-wrap::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
+
+/* Table bleeds to card edges 鈥?standard SaaS data-grid pattern */
 .module-card > .table-wrapper {
   margin: 0 -1.5rem;
   width: calc(100% + 3rem);
@@ -3561,4 +3552,4 @@ th {
 .fx-history-thead { position: sticky; top: 0; z-index: 1; background: #f8fafc; }
 .fx-header-right { text-align: right; }
 .fx-refresh-btn { display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0.8rem; border: 1px solid #e2e8f0; background: white; border-radius: 6px; cursor: pointer; margin-bottom: 0.25rem; }
-.fx-last-updated { font-size: 0.75rem; color: #94a3b8; }
+.fx-last-updated { font-size: 0.75rem; color: #94a3b8; }

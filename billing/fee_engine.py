@@ -23,6 +23,67 @@ from .contract_loader import (
 
 logger = logging.getLogger(__name__)
 
+_COL_CLIENT = "\u6bcd\u516c\u53f8"
+_COL_MEDIA = "\u5a92\u4ecb"
+_COL_SERVICE_TYPE = "\u670d\u52a1\u7c7b\u578b"
+_COL_MANAGED_CONSUMPTION = "\u4ee3\u6295\u6d88\u8017"
+_COL_FLOW_CONSUMPTION = "\u6d41\u6c34\u6d88\u8017"
+_COL_NET_SPEND = "\u6c47\u603b\u7eaf\u82b1\u8d39"
+_COL_NET_SPEND_ALT = "\u6c47\u603b\u7eaf\u6d88\u8017"
+_COL_FX_RATE = "\u6362\u6c47\u6c47\u7387"
+_COL_SERVICE_FEE = "\u670d\u52a1\u8d39"
+_COL_FIXED_SERVICE_FEE = "\u56fa\u5b9a\u670d\u52a1\u8d39"
+_COL_COUPON = "Coupon"
+_COL_TOTAL = "\u6c47\u603b"
+_COL_DST_CANON = "\u76d1\u7ba1\u8fd0\u8425\u8d39\u7528/\u6570\u5b57\u670d\u52a1\u7a0e(DST)"
+
+_DST_COLUMN_CANDIDATES = (
+    "\u76d1\u7ba1\u8fd0\u8425\u8d39\u7528/\u6570\u5b57\u670d\u52a1\u7a0e(DST)\xa0",
+    "\u76d1\u7ba1\u8fd0\u8425\u8d39\u7528/\u6570\u5b57\u670d\u52a1\u7a0e (DST)\xa0",
+    "\u76d1\u7ba1\u8fd0\u8425\u8d39\u7528/\u6570\u5b57\u670d\u52a1\u7a0e(DST)",
+    "\u76d1\u7ba1\u8fd0\u8425\u8d39\u7528/\u6570\u5b57\u670d\u52a1\u7a0e (DST)",
+)
+_DST_COLUMN_NORMALIZED = _COL_DST_CANON
+_DST_COLUMN_FUZZY_ALIASES = (
+    "\u76d1\u7ba1\u8d39",
+    "\u76d1\u7ba1\u8fd0\u8425\u8d39",
+    "\u6570\u5b57\u670d\u52a1\u7a0e",
+    "dst",
+)
+
+_HEADER_ALIASES: dict[str, tuple[str, ...]] = {
+    _COL_CLIENT: (f"{_COL_CLIENT} ",),
+    _COL_MEDIA: (f"{_COL_MEDIA} ",),
+    _COL_SERVICE_TYPE: (f"{_COL_SERVICE_TYPE} ",),
+    _COL_MANAGED_CONSUMPTION: (f"{_COL_MANAGED_CONSUMPTION} ",),
+    _COL_FLOW_CONSUMPTION: (f"{_COL_FLOW_CONSUMPTION} ",),
+    _COL_NET_SPEND: (
+        _COL_NET_SPEND_ALT,
+        f"{_COL_NET_SPEND} ",
+        f"{_COL_NET_SPEND_ALT} ",
+        f"{_COL_NET_SPEND}(USD)",
+        f"{_COL_NET_SPEND_ALT}(USD)",
+    ),
+    _COL_FX_RATE: (f"{_COL_FX_RATE} ",),
+    _COL_SERVICE_FEE: (f"{_COL_SERVICE_FEE} ",),
+    _COL_FIXED_SERVICE_FEE: (f"{_COL_FIXED_SERVICE_FEE} ",),
+    _COL_COUPON: ("COUPON", "coupon", f"{_COL_COUPON} "),
+    _COL_TOTAL: ("Summary", "\u5408\u8ba1", "\u603b\u8ba1", f"{_COL_TOTAL} "),
+    _COL_DST_CANON: (*_DST_COLUMN_CANDIDATES, *_DST_COLUMN_FUZZY_ALIASES),
+}
+
+_NUMERIC_CANONICAL_COLUMNS = {
+    _COL_MANAGED_CONSUMPTION,
+    _COL_FLOW_CONSUMPTION,
+    _COL_NET_SPEND,
+    _COL_FX_RATE,
+    _COL_SERVICE_FEE,
+    _COL_FIXED_SERVICE_FEE,
+    _COL_COUPON,
+    _COL_TOTAL,
+    _COL_DST_CANON,
+}
+
 
 def _round2(value: float) -> float:
     """Standard half-up rounding to 2 decimal places (财务四舍五入)."""
@@ -60,6 +121,58 @@ def _to_float(value) -> float:
     )
     parsed = pd.to_numeric(cleaned, errors="coerce")
     return float(parsed) if pd.notna(parsed) else 0.0
+
+
+def _normalize_header_key(value: object) -> str:
+    return str(value or "").strip().lower().replace("\xa0", "").replace(" ", "").replace("_", "")
+
+
+def _find_matching_columns(df: pd.DataFrame, candidates: tuple[str, ...]) -> list[str]:
+    normalized_candidates = {_normalize_header_key(candidate) for candidate in candidates}
+    matches: list[str] = []
+    for column in df.columns:
+        if str(column) in candidates or _normalize_header_key(column) in normalized_candidates:
+            matches.append(str(column))
+    return matches
+
+
+def _standardize_headers(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    for canonical, aliases in _HEADER_ALIASES.items():
+        candidates = (canonical, *aliases)
+        matches = _find_matching_columns(out, candidates)
+        if not matches:
+            continue
+
+        # Prefer canonical header in output; otherwise rename the first matched variant.
+        if canonical not in out.columns:
+            source = matches[0]
+            if source != canonical:
+                out = out.rename(columns={source: canonical})
+                matches = [canonical if m == source else m for m in matches]
+
+        # If multiple variants coexist, merge sparse values into canonical then drop variants.
+        if canonical in out.columns:
+            for variant in [m for m in matches if m != canonical and m in out.columns]:
+                canonical_series = out[canonical]
+                variant_series = out[variant]
+                if canonical in _NUMERIC_CANONICAL_COLUMNS:
+                    canonical_num = pd.to_numeric(canonical_series, errors="coerce")
+                    variant_num = pd.to_numeric(variant_series, errors="coerce")
+                    use_variant_mask = (
+                        (canonical_num.isna() | (canonical_num.abs() < 1e-9))
+                        & variant_num.notna()
+                        & (variant_num.abs() >= 1e-9)
+                    )
+                    out.loc[use_variant_mask, canonical] = variant_series.loc[use_variant_mask]
+                else:
+                    missing_mask = canonical_series.isna()
+                    if canonical_series.dtype == object:
+                        missing_mask = missing_mask | (canonical_series.astype(str).str.strip() == "")
+                    out.loc[missing_mask, canonical] = variant_series.loc[missing_mask]
+                out = out.drop(columns=[variant])
+
+    return out
 
 
 def _normalize_sheet_currency(sheet_name: str) -> Optional[str]:
@@ -168,6 +281,21 @@ def _detect_row_month(row: pd.Series, default_month: Optional[str]) -> Optional[
             return parsed
     return default_month
 
+def _resolve_dst_column(df: pd.DataFrame) -> Optional[str]:
+    for candidate in _DST_COLUMN_CANDIDATES:
+        if candidate in df.columns:
+            return candidate
+
+    for column_name in df.columns:
+        normalized = str(column_name).replace("\xa0", "").replace(" ", "")
+        if normalized == _DST_COLUMN_NORMALIZED:
+            return column_name
+
+    for column_name in df.columns:
+        normalized = _normalize_header_key(column_name)
+        if any(alias in normalized for alias in _DST_COLUMN_FUZZY_ALIASES):
+            return str(column_name)
+    return None
 
 def _load_consumption_data(consumption_path: str) -> pd.DataFrame:
     """Load consumption data from multi-sheet workbook."""
@@ -176,6 +304,7 @@ def _load_consumption_data(consumption_path: str) -> pd.DataFrame:
 
     for sheet in workbook.sheet_names:
         df_sheet = pd.read_excel(workbook, sheet_name=sheet)
+        df_sheet = _standardize_headers(df_sheet)
         if df_sheet.empty:
             continue
 
@@ -204,7 +333,7 @@ def _load_consumption_data(consumption_path: str) -> pd.DataFrame:
     if not frames:
         raise ValueError("未在上传文件中找到有效消耗数据 Sheet（需包含 母公司/媒介/服务类型 列）")
 
-    return pd.concat(frames, ignore_index=True)
+    return _standardize_headers(pd.concat(frames, ignore_index=True))
 
 
 def _parse_hangseng_rmb_to_usd_context(exchange_context: dict) -> tuple[float, str, str]:
@@ -317,8 +446,9 @@ def calculate_service_fees(
 
     exchange_context = kwargs.get("exchange_context") or {}
     df = _apply_exchange_rates(df_raw, exchange_context, default_month)
+    df = _standardize_headers(df)
 
-    coupon_idx = df.columns.get_loc("Coupon") if "Coupon" in df.columns else len(df.columns)
+    coupon_idx = df.columns.get_loc(_COL_COUPON) if _COL_COUPON in df.columns else len(df.columns)
 
     combined_consumption: dict[tuple[str, str], float] = {}
     for customer in df["母公司"].dropna().unique():
@@ -448,7 +578,7 @@ def calculate_service_fees(
     else:
         df.insert(coupon_idx, "固定服务费", fixed_fees)
 
-    dst_col = "监管运营费用/数字服务税(DST)\xa0"
+    dst_col = _resolve_dst_column(df)
 
     def safe_sum(row):
         # Business invariant: totals are based on converted split spend fields first.
@@ -464,8 +594,8 @@ def calculate_service_fees(
             net_spend,
             _to_float(row["服务费"]) if "服务费" in row else 0,
             _to_float(row["固定服务费"]) if "固定服务费" in row else 0,
-            _to_float(row["Coupon"]) if "Coupon" in row else 0,
-            _to_float(row[dst_col]) if dst_col in row else 0,
+            _to_float(row[_COL_COUPON]) if _COL_COUPON in row else 0,
+            _to_float(row.get(dst_col)) if dst_col else 0,
         ]
         return _round2(sum(values))
 

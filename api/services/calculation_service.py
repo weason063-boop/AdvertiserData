@@ -55,6 +55,34 @@ class CalculationService:
         "监管运营费用/数字服务税(DST)",
         "监管运营费用/数字服务税 (DST)",
     )
+    _DST_COLUMN_NORMALIZED = "监管运营费用/数字服务税(DST)"
+    _DST_COLUMN_FUZZY_ALIASES = ("监管费", "监管运营费", "数字服务税", "dst")
+    _HEADER_ALIASES: dict[str, tuple[str, ...]] = {
+        "母公司": ("母公司 ",),
+        "预付/后付": ("预付 / 后付", "预付后付", "预付/后付 "),
+        "服务类型": ("服务类型 ",),
+        "流水消耗": ("流水消耗 ",),
+        "代投消耗": ("代投消耗 ",),
+        "汇总纯花费": ("汇总纯消耗", "汇总纯花费 ", "汇总纯消耗 ", "汇总纯花费(USD)", "汇总纯消耗(USD)"),
+        "换汇汇率": ("换汇汇率 ",),
+        "服务费": ("服务费 ",),
+        "固定服务费": ("固定服务费 ",),
+        "Coupon": ("COUPON", "coupon", "Coupon "),
+        "汇总": ("Summary", "合计", "总计", "汇总 "),
+        "监管运营费用/数字服务税(DST)": _DST_COLUMN_CANDIDATES,
+        "月份归属": ("月份归属 ",),
+    }
+    _NUMERIC_CANONICAL_COLUMNS = {
+        "流水消耗",
+        "代投消耗",
+        "汇总纯花费",
+        "换汇汇率",
+        "服务费",
+        "固定服务费",
+        "Coupon",
+        "汇总",
+        "监管运营费用/数字服务税(DST)",
+    }
     _DEFAULT_RESULT_OPERATIONS = {"calculate", "recalculate"}
     _ESTIMATE_RESULT_OPERATIONS = {"estimate_calculate", "estimate_recalculate"}
     _ESTIMATE_SHEET_NAME = "Sheet1"
@@ -1263,10 +1291,62 @@ class CalculationService:
             return pd.Series(0.0, index=df.index, dtype="float64")
         return pd.to_numeric(df[column_name], errors="coerce").fillna(0.0)
 
+    def _normalize_header_key(self, value: Any) -> str:
+        return str(value or "").strip().lower().replace("\xa0", "").replace(" ", "").replace("_", "")
+
+    def _find_matching_columns(self, df: pd.DataFrame, candidates: tuple[str, ...]) -> list[str]:
+        normalized_candidates = {self._normalize_header_key(candidate) for candidate in candidates}
+        matches: list[str] = []
+        for column in df.columns:
+            column_name = str(column)
+            if column_name in candidates or self._normalize_header_key(column_name) in normalized_candidates:
+                matches.append(column_name)
+        return matches
+
+    def _standardize_result_headers(self, df: pd.DataFrame) -> pd.DataFrame:
+        out = df.copy()
+        for canonical, aliases in self._HEADER_ALIASES.items():
+            candidates = (canonical, *aliases)
+            matches = self._find_matching_columns(out, candidates)
+            if not matches:
+                continue
+
+            if canonical not in out.columns:
+                source = matches[0]
+                if source != canonical:
+                    out = out.rename(columns={source: canonical})
+                    matches = [canonical if item == source else item for item in matches]
+
+            if canonical in out.columns:
+                for variant in [item for item in matches if item != canonical and item in out.columns]:
+                    canonical_series = out[canonical]
+                    variant_series = out[variant]
+                    if canonical in self._NUMERIC_CANONICAL_COLUMNS:
+                        canonical_num = pd.to_numeric(canonical_series, errors="coerce")
+                        variant_num = pd.to_numeric(variant_series, errors="coerce")
+                        use_variant_mask = (
+                            (canonical_num.isna() | (canonical_num.abs() < 1e-9))
+                            & variant_num.notna()
+                            & (variant_num.abs() >= 1e-9)
+                        )
+                        out.loc[use_variant_mask, canonical] = variant_series.loc[use_variant_mask]
+                    else:
+                        missing_mask = canonical_series.isna()
+                        if canonical_series.dtype == object:
+                            missing_mask = missing_mask | (canonical_series.astype(str).str.strip() == "")
+                        out.loc[missing_mask, canonical] = variant_series.loc[missing_mask]
+                    out = out.drop(columns=[variant])
+
+        return out
+
     def _resolve_first_existing_column(self, df: pd.DataFrame, candidates: tuple[str, ...]) -> str | None:
         for candidate in candidates:
             if candidate in df.columns:
                 return candidate
+        normalized_candidates = {self._normalize_header_key(candidate) for candidate in candidates}
+        for column_name in df.columns:
+            if self._normalize_header_key(column_name) in normalized_candidates:
+                return str(column_name)
         return None
 
     def _round2(self, value: float) -> float:
@@ -1307,8 +1387,12 @@ class CalculationService:
             if candidate in df.columns:
                 return candidate
         for column_name in df.columns:
-            normalized = str(column_name).replace("\xa0", "").replace(" ", "")
-            if normalized == "监管运营费用/数字服务税(DST)":
+            normalized = self._normalize_header_key(column_name)
+            if normalized == self._normalize_header_key(self._DST_COLUMN_NORMALIZED):
+                return str(column_name)
+        for column_name in df.columns:
+            normalized = self._normalize_header_key(column_name)
+            if any(alias in normalized for alias in self._DST_COLUMN_FUZZY_ALIASES):
                 return column_name
         return None
 
@@ -1320,7 +1404,7 @@ class CalculationService:
         result_df = result_source.copy() if isinstance(result_source, pd.DataFrame) else pd.read_excel(result_source)
         month_str = self._parse_month_from_filename(filename)
 
-        normalized_df = result_df.copy()
+        normalized_df = self._standardize_result_headers(result_df.copy())
         normalized_df["_client_name"] = (
             normalized_df["母公司"].apply(self._normalize_text_cell)
             if "母公司" in normalized_df.columns
