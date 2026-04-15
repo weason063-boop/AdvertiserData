@@ -1,0 +1,54 @@
+- generic [ref=e3]:
+  - complementary [ref=e4]:
+    - heading "广告客户数据" [level=1] [ref=e6]
+    - navigation [ref=e7]:
+      - button "数据看板" [ref=e8] [cursor=pointer]:
+        - img [ref=e9]
+        - generic [ref=e14]: 数据看板
+      - button "客户明细" [ref=e15] [cursor=pointer]:
+        - img [ref=e16]
+        - generic [ref=e18]: 客户明细
+      - button "实时汇率" [ref=e19] [cursor=pointer]:
+        - img [ref=e20]
+        - generic [ref=e23]: 实时汇率
+      - button "客户条款" [ref=e24] [cursor=pointer]:
+        - img [ref=e25]
+        - generic [ref=e30]: 客户条款
+      - button "账单明细" [ref=e31] [cursor=pointer]:
+        - img [ref=e32]
+        - generic [ref=e35]: 账单明细
+      - button "预估消耗" [ref=e36] [cursor=pointer]:
+        - img [ref=e37]
+        - generic [ref=e40]: 预估消耗
+    - button "设置" [ref=e42] [cursor=pointer]:
+      - img [ref=e43]
+      - generic [ref=e46]: 设置
+  - main [ref=e47]:
+    - generic [ref=e48]:
+      - generic [ref=e49]:
+        - heading "数据概览" [level=2] [ref=e50]
+        - button "登录" [ref=e52] [cursor=pointer]:
+          - img [ref=e53]
+          - generic [ref=e56]: 登录
+      - generic [ref=e58]:
+        - img [ref=e60]
+        - heading "暂无账单数据" [level=3] [ref=e62]
+        - paragraph [ref=e63]: 请上传消耗数据后开始分析
+  - generic [ref=e65]:
+    - generic [ref=e66]:
+      - img [ref=e68]
+      - heading "用户登录" [level=2] [ref=e71]
+      - paragraph [ref=e72]: 请输入账号和密码以继续使用
+    - generic [ref=e73]:
+      - generic [ref=e74]:
+        - generic [ref=e75]: 账号
+        - generic [ref=e76]:
+          - img
+          - textbox "请输入用户名" [ref=e77]: qa
+      - generic [ref=e78]:
+        - generic [ref=e79]: 密码
+        - generic [ref=e80]:
+          - img
+          - textbox "请输入密码" [ref=e81]: qa123456
+      - generic [ref=e83]: 网络错误，请稍后重试
+      - button "登录" [ref=e82] [cursor=pointer]

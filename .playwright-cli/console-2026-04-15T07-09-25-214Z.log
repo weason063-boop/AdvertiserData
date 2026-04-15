@@ -1,0 +1,58 @@
+[     363ms] [VERBOSE] [DOM] Input elements should have autocomplete attributes (suggested: "current-password"): (More info: https://goo.gl/9p2vKq) %o @ http://127.0.0.1:4173/:0
+[ 1207075ms] [ERROR] Failed to load clients: TypeError: Cannot read properties of null (reading 'clients')
+    at On (http://127.0.0.1:4173/assets/index-BBNk5j6k.js:51:33266) @ http://127.0.0.1:4173/assets/index-BBNk5j6k.js:50
+[ 1207077ms] [ERROR] Failed to load contract change reviews: TypeError: Cannot read properties of null (reading 'reviews')
+    at Xr (http://127.0.0.1:4173/assets/index-BBNk5j6k.js:51:33750) @ http://127.0.0.1:4173/assets/index-BBNk5j6k.js:50
+[ 1207078ms] [ERROR] Failed to load latest result TypeError: Cannot read properties of null (reading 'has_result')
+    at Ah (http://127.0.0.1:4173/assets/index-BBNk5j6k.js:51:34099) @ http://127.0.0.1:4173/assets/index-BBNk5j6k.js:50
+[ 1207091ms] [ERROR] TypeError: Cannot destructure property 'stats' of 'e' as it is null.
+    at jF (http://127.0.0.1:4173/assets/index-BBNk5j6k.js:44:109263)
+    at bv (http://127.0.0.1:4173/assets/index-BBNk5j6k.js:8:48230)
+    at qv (http://127.0.0.1:4173/assets/index-BBNk5j6k.js:8:71050)
+    at S1 (http://127.0.0.1:4173/assets/index-BBNk5j6k.js:8:81403)
+    at Z1 (http://127.0.0.1:4173/assets/index-BBNk5j6k.js:8:117188)
+    at JD (http://127.0.0.1:4173/assets/index-BBNk5j6k.js:8:116232)
+    at um (http://127.0.0.1:4173/assets/index-BBNk5j6k.js:8:116062)
+    at Y1 (http://127.0.0.1:4173/assets/index-BBNk5j6k.js:8:112845)
+    at cS (http://127.0.0.1:4173/assets/index-BBNk5j6k.js:8:124672)
+    at MessagePort.ae (http://127.0.0.1:4173/assets/index-BBNk5j6k.js:1:11217) @ http://127.0.0.1:4173/assets/index-BBNk5j6k.js:7
+[ 1207091ms] [ERROR] Uncaught error: TypeError: Cannot destructure property 'stats' of 'e' as it is null.
+    at jF (http://127.0.0.1:4173/assets/index-BBNk5j6k.js:44:109263)
+    at bv (http://127.0.0.1:4173/assets/index-BBNk5j6k.js:8:48230)
+    at qv (http://127.0.0.1:4173/assets/index-BBNk5j6k.js:8:71050)
+    at S1 (http://127.0.0.1:4173/assets/index-BBNk5j6k.js:8:81403)
+    at Z1 (http://127.0.0.1:4173/assets/index-BBNk5j6k.js:8:117188)
+    at JD (http://127.0.0.1:4173/assets/index-BBNk5j6k.js:8:116232)
+    at um (http://127.0.0.1:4173/assets/index-BBNk5j6k.js:8:116062)
+    at Y1 (http://127.0.0.1:4173/assets/index-BBNk5j6k.js:8:112845)
+    at cS (http://127.0.0.1:4173/assets/index-BBNk5j6k.js:8:124672)
+    at MessagePort.ae (http://127.0.0.1:4173/assets/index-BBNk5j6k.js:1:11217) {componentStack: 
+    at jF (http://127.0.0.1:4173/assets/index-BBN…127.0.0.1:4173/assets/index-BBNk5j6k.js:51:29866)} @ http://127.0.0.1:4173/assets/index-BBNk5j6k.js:46
+[ 1281301ms] [ERROR] Failed to load clients: TypeError: Cannot read properties of null (reading 'clients')
+    at On (http://127.0.0.1:4173/assets/index-BBNk5j6k.js:51:33266) @ http://127.0.0.1:4173/assets/index-BBNk5j6k.js:50
+[ 1281301ms] [ERROR] Failed to load contract change reviews: TypeError: Cannot read properties of null (reading 'reviews')
+    at Xr (http://127.0.0.1:4173/assets/index-BBNk5j6k.js:51:33750) @ http://127.0.0.1:4173/assets/index-BBNk5j6k.js:50
+[ 1889231ms] [ERROR] Failed to load clients: TypeError: Cannot read properties of null (reading 'clients')
+    at On (http://127.0.0.1:4173/assets/index-BBNk5j6k.js:51:33266) @ http://127.0.0.1:4173/assets/index-BBNk5j6k.js:50
+[ 1889231ms] [ERROR] Failed to load contract change reviews: TypeError: Cannot read properties of null (reading 'reviews')
+    at Xr (http://127.0.0.1:4173/assets/index-BBNk5j6k.js:51:33750) @ http://127.0.0.1:4173/assets/index-BBNk5j6k.js:50
+[ 1889241ms] [ERROR] Failed to load latest result TypeError: Cannot read properties of null (reading 'has_result')
+    at Ah (http://127.0.0.1:4173/assets/index-BBNk5j6k.js:51:34099) @ http://127.0.0.1:4173/assets/index-BBNk5j6k.js:50
+[ 1889241ms] [ERROR] Failed to load latest estimate result TypeError: Cannot read properties of null (reading 'has_result')
+    at Ks (http://127.0.0.1:4173/assets/index-BBNk5j6k.js:51:34562) @ http://127.0.0.1:4173/assets/index-BBNk5j6k.js:50
+[ 1889478ms] [ERROR] Failed to load clients: TypeError: Cannot read properties of null (reading 'clients')
+    at On (http://127.0.0.1:4173/assets/index-BBNk5j6k.js:51:33266) @ http://127.0.0.1:4173/assets/index-BBNk5j6k.js:50
+[ 1889479ms] [ERROR] Failed to load contract change reviews: TypeError: Cannot read properties of null (reading 'reviews')
+    at Xr (http://127.0.0.1:4173/assets/index-BBNk5j6k.js:51:33750) @ http://127.0.0.1:4173/assets/index-BBNk5j6k.js:50
+[ 2097924ms] [ERROR] Failed to load clients: TypeError: Cannot read properties of null (reading 'clients')
+    at On (http://127.0.0.1:4173/assets/index-BBNk5j6k.js:51:33266) @ http://127.0.0.1:4173/assets/index-BBNk5j6k.js:50
+[ 2097924ms] [ERROR] Failed to load contract change reviews: TypeError: Cannot read properties of null (reading 'reviews')
+    at Xr (http://127.0.0.1:4173/assets/index-BBNk5j6k.js:51:33750) @ http://127.0.0.1:4173/assets/index-BBNk5j6k.js:50
+[ 2097927ms] [ERROR] Failed to load latest result TypeError: Cannot read properties of null (reading 'has_result')
+    at Ah (http://127.0.0.1:4173/assets/index-BBNk5j6k.js:51:34099) @ http://127.0.0.1:4173/assets/index-BBNk5j6k.js:50
+[ 2097927ms] [ERROR] Failed to load latest estimate result TypeError: Cannot read properties of null (reading 'has_result')
+    at Ks (http://127.0.0.1:4173/assets/index-BBNk5j6k.js:51:34562) @ http://127.0.0.1:4173/assets/index-BBNk5j6k.js:50
+[ 2098184ms] [ERROR] Failed to load clients: TypeError: Cannot read properties of null (reading 'clients')
+    at On (http://127.0.0.1:4173/assets/index-BBNk5j6k.js:51:33266) @ http://127.0.0.1:4173/assets/index-BBNk5j6k.js:50
+[ 2098184ms] [ERROR] Failed to load contract change reviews: TypeError: Cannot read properties of null (reading 'reviews')
+    at Xr (http://127.0.0.1:4173/assets/index-BBNk5j6k.js:51:33750) @ http://127.0.0.1:4173/assets/index-BBNk5j6k.js:50

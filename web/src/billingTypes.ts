@@ -23,6 +23,36 @@ export interface SyncResult {
   count: number
   message: string
   time: string
+  line_count?: number
+  client_count?: number
+  new_client_count?: number
+  unchanged_count?: number
+  pending_count?: number
+  new_clients?: string[]
+}
+
+export interface ContractChangeReview {
+  id: number
+  client_name: string
+  source_type: string
+  source_token: string
+  sync_batch_id: string
+  status: 'pending' | 'approved' | 'ignored'
+  change_fields: string[]
+  current_business_type: string | null
+  new_business_type: string | null
+  current_department: string | null
+  new_department: string | null
+  current_entity: string | null
+  new_entity: string | null
+  current_fee_clause: string | null
+  new_fee_clause: string | null
+  current_payment_term: string | null
+  new_payment_term: string | null
+  reviewed_at: string | null
+  reviewed_by: string | null
+  created_at: string
+  updated_at: string
 }
 
 export interface BillingDetailMetrics {

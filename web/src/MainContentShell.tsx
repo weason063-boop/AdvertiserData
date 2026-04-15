@@ -1,5 +1,12 @@
 import type { ChangeEvent, KeyboardEventHandler } from 'react'
-import type { CalculationResult, Client, OperationAuditLog, ResultRow, SyncResult } from './billingTypes'
+import type {
+  CalculationResult,
+  Client,
+  ContractChangeReview,
+  OperationAuditLog,
+  ResultRow,
+  SyncResult,
+} from './billingTypes'
 import { ClientHistoryDetailPanel } from './ClientHistoryDetailPanel'
 import { ClientsPanel } from './ClientsPanel'
 import { Dashboard } from './DashboardV5'
@@ -56,6 +63,7 @@ interface MainContentShellProps {
   onOpenClientDetail: (clientName: string) => void
   onCloseClientDetail: () => void
   syncResult: SyncResult | null
+  contractChangeReviews: ContractChangeReview[]
   clients: Client[]
   editingClient: Client | null
   editClause: string
@@ -67,6 +75,12 @@ interface MainContentShellProps {
   onSaveClause: () => void
   onCloseEdit: () => void
   onOpenEdit: (client: Client) => void
+  onApproveContractChangeReview: (reviewId: number, overrideNewFeeClause?: string) => void
+  onIgnoreContractChangeReview: (reviewId: number) => void
+  onBatchApproveContractChangeReviews: (
+    reviewIds: number[],
+    overrideNewFeeClauseByReviewId?: Record<number, string>,
+  ) => void
   results: CalculationResult | null
   pagedResultsData: ResultRow[]
   resultsTotalRows: number
@@ -159,6 +173,7 @@ export function MainContentShell({
   onOpenClientDetail,
   onCloseClientDetail,
   syncResult,
+  contractChangeReviews,
   clients,
   editingClient,
   editClause,
@@ -170,6 +185,9 @@ export function MainContentShell({
   onSaveClause,
   onCloseEdit,
   onOpenEdit,
+  onApproveContractChangeReview,
+  onIgnoreContractChangeReview,
+  onBatchApproveContractChangeReviews,
   results,
   pagedResultsData,
   resultsTotalRows,
@@ -275,6 +293,7 @@ export function MainContentShell({
             active={activeTab === 'clients'}
             syncResult={syncResult}
             loading={loading}
+            search={search}
             isAddingClient={isAddingClient}
             canClientWrite={canClientWrite}
             newClientData={newClientData}
@@ -288,6 +307,10 @@ export function MainContentShell({
             onSaveClause={onSaveClause}
             onCloseEdit={onCloseEdit}
             onOpenEdit={onOpenEdit}
+            contractChangeReviews={contractChangeReviews}
+            onApproveContractChangeReview={onApproveContractChangeReview}
+            onIgnoreContractChangeReview={onIgnoreContractChangeReview}
+            onBatchApproveContractChangeReviews={onBatchApproveContractChangeReviews}
           />
 
           {activeTab === 'results' && (

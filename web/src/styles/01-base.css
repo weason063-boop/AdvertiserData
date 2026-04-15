@@ -1,0 +1,163 @@
+﻿/* @import removed in favor of index.html links */
+
+:root {
+  /* Design Tokens: Minimalist SaaS Evolution */
+
+  /* Backgrounds & Surfaces */
+  --bg-page: #F8FAFC;
+  /* Slate 50 - Cleaner neutral */
+  --bg-surface: #FFFFFF;
+  --bg-sidebar: #FFFFFF;
+
+  /* Brand Colors - Professional Metric-First Palette */
+  --primary: #4F46E5;
+  /* Indigo 600 */
+  --primary-hover: #4338CA;
+  /* Indigo 700 */
+  --primary-light: #F5F3FF;
+  /* Indigo 50 - Softer */
+
+  /* Accents & Data Viz */
+  --secondary: #0EA5E9;
+  /* Sky 500 */
+  --accent: #10B981;
+  /* Emerald 500 */
+  --warning: #F59E0B;
+  /* Amber 500 */
+  --danger: #EF4444;
+  /* Red 500 */
+
+  /* Text - High Legibility SaaS System */
+  --text-main: #020617;
+  /* Slate 950 - Maximum contrast */
+  --text-secondary: #334155;
+  /* Slate 700 - Stronger secondary */
+  --text-muted: #64748B;
+  /* Slate 500 - Readable muted */
+  --text-on-primary: #FFFFFF;
+
+  /* UI Infrastructure */
+  --border-subtle: #F1F5F9;
+  /* Slate 100 - Very subtle */
+  --border-strong: #E2E8F0;
+  /* Slate 200 */
+  --border-focus: #C7D2FE;
+  /* Indigo 200 */
+
+  /* Shadow Evolution: Depth without weight */
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.05);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.04), 0 4px 6px -4px rgba(0, 0, 0, 0.03);
+  --shadow-card: var(--shadow-sm);
+  /* Default to minimal */
+  --shadow-float: var(--shadow-lg);
+
+  /* Typography */
+  --font-display: 'Inter', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', system-ui, sans-serif;
+  --font-body: 'Inter', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Courier New', monospace;
+  --title-page-size: 1.85rem;
+  --title-page-weight: 800;
+  --title-page-line-height: 1.25;
+  --title-page-letter-spacing: -0.03em;
+  --title-section-size: 1.15rem;
+  --title-section-weight: 800;
+  --title-section-line-height: 1.4;
+  --title-section-letter-spacing: -0.03em;
+
+  /* Layout */
+  --sidebar-width: 240px;
+  /* Slightly slimmer for focus */
+  --radius-lg: 12px;
+  --radius-md: 8px;
+  --radius-sm: 4px;
+
+  /* Transitions */
+  --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-normal: 250ms cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* Segmentation Colors */
+  --segment-whale: #4F46E5;
+  /* Indigo 600 */
+  --segment-core: #0EA5E9;
+  /* Sky 500 */
+  --segment-longtail: #94A3B8;
+  /* Slate 400 */
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+*:focus {
+  outline: none;
+}
+
+/* Keep keyboard focus visible for accessibility while avoiding noisy mouse focus styles. */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[role="button"]:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 3px var(--primary-light);
+}
+
+button:focus:not(:focus-visible),
+a:focus:not(:focus-visible),
+input:focus:not(:focus-visible),
+select:focus:not(:focus-visible),
+textarea:focus:not(:focus-visible),
+[role="button"]:focus:not(:focus-visible) {
+  outline: none;
+  box-shadow: none;
+}
+
+body {
+  font-family: var(--font-body);
+  background: var(--bg-page);
+  color: var(--text-main);
+  min-height: 100vh;
+  line-height: 1.6;
+}
+
+/* Ensure form elements inherit font properly */
+input,
+button,
+textarea,
+select {
+  font-family: inherit;
+}
+
+/* Typography Resets */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-family: var(--font-display);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+p,
+span,
+div,
+li,
+td,
+th {
+  font-family: var(--font-body);
+}
+
+.app {
+  display: flex;
+  min-height: 100vh;
+}
+

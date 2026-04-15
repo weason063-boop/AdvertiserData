@@ -20,6 +20,7 @@ from api.auth import (
     verify_password,
 )
 from api.database import (
+    ensure_client_contract_change_reviews_table,
     ensure_client_monthly_detail_stats_table,
     ensure_client_monthly_notes_table,
     SessionLocal,
@@ -48,6 +49,7 @@ async def lifespan(app: FastAPI):
     try:
         ensure_user_permissions_column()
         ensure_dashboard_indexes()
+        ensure_client_contract_change_reviews_table()
         ensure_client_monthly_detail_stats_table()
         ensure_client_monthly_notes_table()
         ensure_operation_audit_table()

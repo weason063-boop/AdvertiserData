@@ -1,0 +1,54 @@
+- generic [ref=e3]:
+  - complementary [ref=e4]:
+    - heading "广告客户数据" [level=1] [ref=e6]
+    - navigation [ref=e7]:
+      - button "数据看板" [ref=e8] [cursor=pointer]:
+        - img [ref=e9]
+        - generic [ref=e14]: 数据看板
+      - button "客户明细" [ref=e15] [cursor=pointer]:
+        - img [ref=e16]
+        - generic [ref=e18]: 客户明细
+      - button "实时汇率" [ref=e19] [cursor=pointer]:
+        - img [ref=e20]
+        - generic [ref=e23]: 实时汇率
+      - button "客户条款" [ref=e24] [cursor=pointer]:
+        - img [ref=e25]
+        - generic [ref=e30]: 客户条款
+      - button "账单明细" [ref=e31] [cursor=pointer]:
+        - img [ref=e32]
+        - generic [ref=e35]: 账单明细
+      - button "预估消耗" [ref=e36] [cursor=pointer]:
+        - img [ref=e37]
+        - generic [ref=e40]: 预估消耗
+      - button "任务历史" [ref=e41] [cursor=pointer]:
+        - img [ref=e42]
+        - generic [ref=e47]: 任务历史
+    - button "设置" [ref=e49] [cursor=pointer]:
+      - img [ref=e50]
+      - generic [ref=e53]: 设置
+  - main [ref=e54]:
+    - generic [ref=e55]:
+      - generic [ref=e56]:
+        - heading "客户条款管理" [level=2] [ref=e57]
+        - generic [ref=e58]:
+          - generic [ref=e59]:
+            - img
+            - textbox "搜索客户/条款关键词..." [ref=e60]
+          - button "新增客户" [ref=e61] [cursor=pointer]:
+            - img [ref=e62]
+            - text: 新增客户
+          - button "同步飞书条款" [ref=e63] [cursor=pointer]:
+            - img [ref=e64]
+            - text: 同步飞书条款
+      - table [ref=e72]:
+        - rowgroup [ref=e73]:
+          - row "客户名称 主体 业务类型 账期 服务费条款 操作" [ref=e74]:
+            - columnheader "客户名称" [ref=e75]
+            - columnheader "主体" [ref=e76]
+            - columnheader "业务类型" [ref=e77]
+            - columnheader "账期" [ref=e78]
+            - columnheader "服务费条款" [ref=e79]
+            - columnheader "操作" [ref=e80]
+        - rowgroup [ref=e81]:
+          - row "暂无客户条款数据" [ref=e82]:
+            - cell "暂无客户条款数据" [ref=e83]

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, UniqueConstraint, Index
+from sqlalchemy import Column, Integer, String, Float, DateTime, UniqueConstraint, Index, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.sql import func
 
@@ -38,6 +38,45 @@ class ClientContractLine(Base):
         UniqueConstraint(
             'source_type', 'source_token', 'source_row_index',
             name='_contract_line_source_row_uc'
+        ),
+    )
+
+
+class ClientContractChangeReview(Base):
+    __tablename__ = "client_contract_change_reviews"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    client_name = Column(String, nullable=False)
+    source_type = Column(String, nullable=False)
+    source_token = Column(String, nullable=False)
+    sync_batch_id = Column(String, nullable=False)
+    status = Column(String, nullable=False, default="pending", index=True)
+    change_fields_json = Column(String, nullable=False, default="[]")
+    current_business_type = Column(String)
+    new_business_type = Column(String)
+    current_department = Column(String)
+    new_department = Column(String)
+    current_entity = Column(String)
+    new_entity = Column(String)
+    current_fee_clause = Column(String)
+    new_fee_clause = Column(String)
+    current_payment_term = Column(String)
+    new_payment_term = Column(String)
+    reviewed_at = Column(DateTime)
+    reviewed_by = Column(String)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        Index('ix_contract_change_reviews_source', 'source_type', 'source_token'),
+        Index('ix_contract_change_reviews_status_client', 'status', 'client_name'),
+        Index(
+            'ux_contract_change_reviews_pending_client_source',
+            'client_name',
+            'source_type',
+            'source_token',
+            unique=True,
+            sqlite_where=text("status = 'pending'"),
         ),
     )
 

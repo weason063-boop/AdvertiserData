@@ -1,0 +1,22 @@
+﻿/* --- ExchangeRates Utilities --- */
+.fx-margin-top { margin-top: 1rem; }
+.fx-margin-left { margin-left: 1rem; }
+.fx-currency-name { color: #0369a1 !important; font-weight: bold; }
+.fx-val-lg { font-size: 1.1rem; font-weight: 600; }
+.fx-text-muted { color: #94a3b8; }
+.fx-text-sm-muted { font-size: 0.85rem; color: #94a3b8; }
+.fx-empty-cell { text-align: center; padding: 2rem; color: #94a3b8; }
+.fx-page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; }
+.fx-header-left { display: flex; align-items: center; gap: 1rem; }
+.fx-header-subtitle { font-size: 0.9rem; color: #64748b; }
+.fx-error { color: #ef4444; margin-bottom: 1rem; }
+.fx-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
+.fx-header-left-md { display: flex; align-items: center; gap: 0.75rem; }
+.fx-icon-green { padding: 8px; background: #f0fdf4; border-radius: 8px; color: #16a34a; }
+.fx-icon-blue { padding: 8px; background: #eff6ff; border-radius: 8px; color: #2563eb; }
+.fx-section-subtitle { font-size: 0.85rem; color: #64748b; margin-top: 2px; }
+.fx-history-wrapper { margin-top: 1rem; max-height: 400px; overflow-y: auto; }
+.fx-history-thead { position: sticky; top: 0; z-index: 1; background: #f8fafc; }
+.fx-header-right { text-align: right; }
+.fx-refresh-btn { display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0.8rem; border: 1px solid #e2e8f0; background: white; border-radius: 6px; cursor: pointer; margin-bottom: 0.25rem; }
+.fx-last-updated { font-size: 0.75rem; color: #94a3b8; }

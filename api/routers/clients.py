@@ -25,6 +25,15 @@ class CreateClientRequest(BaseModel):
     fee_clause: str = ""
 
 
+class BatchApproveContractChangeReviewsRequest(BaseModel):
+    review_ids: list[int]
+    override_new_fee_clause_by_review_id: dict[int, str] | None = None
+
+
+class ApproveContractChangeReviewRequest(BaseModel):
+    override_new_fee_clause: str | None = None
+
+
 @router.post("")
 def add_new_client(
     request: CreateClientRequest,
@@ -39,6 +48,65 @@ def add_new_client(
 def list_clients(search: str = None, db: Session = Depends(get_db), current_user: str = Depends(get_current_user)):
     clients = service.list_clients(search, db)
     return {"clients": clients, "total": len(clients)}
+
+
+@router.get("/contract-change-reviews")
+def list_contract_change_reviews(
+    search: str = None,
+    db: Session = Depends(get_db),
+    current_user: str = Depends(get_current_user),
+):
+    reviews = service.list_contract_change_reviews(search, db)
+    return {"reviews": reviews, "total": len(reviews)}
+
+
+@router.post("/contract-change-reviews/batch-approve")
+def batch_approve_contract_change_reviews(
+    request: BatchApproveContractChangeReviewsRequest,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_permission(PERMISSION_CLIENT_WRITE)),
+):
+    result = service.batch_approve_contract_change_reviews(
+        request.review_ids,
+        current_user.get("username") or current_user.get("sub") or "",
+        db,
+        request.override_new_fee_clause_by_review_id,
+    )
+    return {"status": "ok", **result}
+
+
+@router.post("/contract-change-reviews/{review_id}/approve")
+def approve_contract_change_review(
+    review_id: int,
+    request: ApproveContractChangeReviewRequest | None = None,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_permission(PERMISSION_CLIENT_WRITE)),
+):
+    review = service.approve_contract_change_review(
+        review_id,
+        current_user.get("username") or current_user.get("sub") or "",
+        db,
+        request.override_new_fee_clause if request else None,
+    )
+    if not review:
+        raise HTTPException(status_code=404, detail="待确认记录不存在")
+    return {"status": "ok", "review": review}
+
+
+@router.post("/contract-change-reviews/{review_id}/ignore")
+def ignore_contract_change_review(
+    review_id: int,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_permission(PERMISSION_CLIENT_WRITE)),
+):
+    success = service.ignore_contract_change_review(
+        review_id,
+        current_user.get("username") or current_user.get("sub") or "",
+        db,
+    )
+    if not success:
+        raise HTTPException(status_code=404, detail="待确认记录不存在")
+    return {"status": "ok"}
 
 
 @router.get("/{client_id}")

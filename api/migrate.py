@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -11,11 +13,12 @@ import pandas as pd
 from sqlalchemy.exc import OperationalError
 
 from .database import SessionLocal, upsert_client
-from .models import ClientContractLine
+from .models import Client, ClientContractChangeReview, ClientContractLine
 
 logger = logging.getLogger(__name__)
 
 _EMPTY_CLAUSE_VALUES = {"", "/", "-", "无", "none", "null", "nan"}
+_REVIEWABLE_FIELDS = ("business_type", "entity", "fee_clause", "payment_term")
 
 
 def migrate_client_data(data: list) -> int:
@@ -100,18 +103,89 @@ def _pick_preferred_contract_line(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return sorted(rows, key=_sort_key)[0]
 
 
+def _collect_reviewable_changes(client_record: Client, chosen: dict[str, Any]) -> list[str]:
+    changed_fields: list[str] = []
+    for field_name in _REVIEWABLE_FIELDS:
+        current_value = _to_text(getattr(client_record, field_name, None))
+        next_value = _to_text(chosen.get(field_name))
+        if current_value != next_value:
+            changed_fields.append(field_name)
+    return changed_fields
+
+
+def _clear_pending_contract_change_review(
+    db,
+    *,
+    client_name: str,
+    source_type: str,
+    source_token: str,
+) -> None:
+    db.query(ClientContractChangeReview).filter(
+        ClientContractChangeReview.client_name == client_name,
+        ClientContractChangeReview.source_type == source_type,
+        ClientContractChangeReview.source_token == source_token,
+        ClientContractChangeReview.status == "pending",
+    ).delete(synchronize_session=False)
+
+
+def _upsert_pending_contract_change_review(
+    db,
+    *,
+    client_record: Client,
+    chosen: dict[str, Any],
+    change_fields: list[str],
+    source_type: str,
+    source_token: str,
+    sync_batch_id: str,
+) -> None:
+    review = db.query(ClientContractChangeReview).filter(
+        ClientContractChangeReview.client_name == client_record.name,
+        ClientContractChangeReview.source_type == source_type,
+        ClientContractChangeReview.source_token == source_token,
+        ClientContractChangeReview.status == "pending",
+    ).first()
+
+    if review is None:
+        review = ClientContractChangeReview(
+            client_name=client_record.name,
+            source_type=source_type,
+            source_token=source_token,
+            status="pending",
+        )
+        db.add(review)
+
+    review.sync_batch_id = sync_batch_id
+    review.change_fields_json = json.dumps(change_fields, ensure_ascii=False)
+    review.current_business_type = _to_text(client_record.business_type)
+    review.new_business_type = _to_text(chosen.get("business_type"))
+    review.current_department = _to_text(client_record.department)
+    review.new_department = _to_text(chosen.get("department"))
+    review.current_entity = _to_text(client_record.entity)
+    review.new_entity = _to_text(chosen.get("entity"))
+    review.current_fee_clause = _to_text(client_record.fee_clause)
+    review.new_fee_clause = _to_text(chosen.get("fee_clause"))
+    review.current_payment_term = _to_text(client_record.payment_term)
+    review.new_payment_term = _to_text(chosen.get("payment_term"))
+    review.reviewed_at = None
+    review.reviewed_by = None
+
+
 def migrate_feishu_contract_lines(
     data: list,
     source_token: str,
     source_type: str = "feishu_sheet",
-) -> dict[str, int]:
+) -> dict[str, Any]:
     """
     逐行写入 client_contract_lines，并聚合回 clients（兼容旧逻辑）。
     """
     db = SessionLocal()
     source_token = _to_text(source_token) or "unknown_source"
+    sync_batch_id = uuid.uuid4().hex
     inserted_rows: list[dict[str, Any]] = []
     clients_map: dict[str, list[dict[str, Any]]] = {}
+    new_clients: list[str] = []
+    pending_count = 0
+    unchanged_count = 0
 
     try:
         db.query(ClientContractLine).filter(
@@ -154,32 +228,91 @@ def migrate_feishu_contract_lines(
                 )
             )
 
+        if clients_map:
+            db.query(ClientContractChangeReview).filter(
+                ClientContractChangeReview.source_type == source_type,
+                ClientContractChangeReview.source_token == source_token,
+                ClientContractChangeReview.status == "pending",
+                ~ClientContractChangeReview.client_name.in_(list(clients_map.keys())),
+            ).delete(synchronize_session=False)
+        else:
+            db.query(ClientContractChangeReview).filter(
+                ClientContractChangeReview.source_type == source_type,
+                ClientContractChangeReview.source_token == source_token,
+                ClientContractChangeReview.status == "pending",
+            ).delete(synchronize_session=False)
+
         for client_name, rows in clients_map.items():
             chosen = _pick_preferred_contract_line(rows)
-            upsert_client(
-                name=client_name,
-                business_type=chosen.get("business_type") or "",
-                department=chosen.get("department") or "",
-                entity=chosen.get("entity") or "",
-                fee_clause=chosen.get("fee_clause") or "",
-                payment_term=chosen.get("payment_term") or "",
-                db=db,
+            client_record = db.query(Client).filter(Client.name == client_name).first()
+
+            if client_record is None:
+                db.add(
+                    Client(
+                        name=client_name,
+                        business_type=chosen.get("business_type") or "",
+                        department=chosen.get("department") or "",
+                        entity=chosen.get("entity") or "",
+                        fee_clause=chosen.get("fee_clause") or "",
+                        payment_term=chosen.get("payment_term") or "",
+                    )
+                )
+                _clear_pending_contract_change_review(
+                    db,
+                    client_name=client_name,
+                    source_type=source_type,
+                    source_token=source_token,
+                )
+                new_clients.append(client_name)
+                continue
+
+            change_fields = _collect_reviewable_changes(client_record, chosen)
+            if not change_fields:
+                _clear_pending_contract_change_review(
+                    db,
+                    client_name=client_name,
+                    source_type=source_type,
+                    source_token=source_token,
+                )
+                unchanged_count += 1
+                continue
+
+            _upsert_pending_contract_change_review(
+                db,
+                client_record=client_record,
+                chosen=chosen,
+                change_fields=change_fields,
+                source_type=source_type,
+                source_token=source_token,
+                sync_batch_id=sync_batch_id,
             )
+            pending_count += 1
 
         db.commit()
         logger.info(
-            "Feishu contract sync persisted %s line rows and aggregated %s clients",
+            "Feishu contract sync persisted %s line rows, aggregated %s clients, new=%s, pending=%s, unchanged=%s",
             len(inserted_rows),
             len(clients_map),
+            len(new_clients),
+            pending_count,
+            unchanged_count,
         )
         return {
             "line_count": len(inserted_rows),
             "client_count": len(clients_map),
+            "new_client_count": len(new_clients),
+            "new_clients": sorted(new_clients),
+            "pending_count": pending_count,
+            "unchanged_count": unchanged_count,
+            "sync_batch_id": sync_batch_id,
         }
     except OperationalError as exc:
         db.rollback()
-        if "no such table: client_contract_lines" in str(exc).lower():
+        error_message = str(exc).lower()
+        if "no such table: client_contract_lines" in error_message:
             raise RuntimeError("缺少表 client_contract_lines，请先执行 alembic upgrade head") from exc
+        if "no such table: client_contract_change_reviews" in error_message:
+            raise RuntimeError("缺少表 client_contract_change_reviews，请先执行 alembic upgrade head") from exc
         logger.exception("Database operation failed while migrating Feishu contract lines")
         raise
     except Exception:

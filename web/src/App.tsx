@@ -5,7 +5,7 @@ import {
   extractRoleFromToken,
   extractUsernameFromToken,
 } from './authTokenUtils'
-import type { CalculationResult, Client, SyncResult } from './billingTypes'
+import type { CalculationResult, Client, ContractChangeReview, SyncResult } from './billingTypes'
 import { LoginModal } from './LoginModal'
 import { MainContentShell } from './MainContentShell'
 import { SidebarNav } from './SidebarNav'
@@ -104,6 +104,7 @@ function App() {
   const [toastType, setToastType] = useState<'info' | 'success' | 'error'>('info')
 
   const [syncResult, setSyncResult] = useState<SyncResult | null>(null)
+  const [contractChangeReviews, setContractChangeReviews] = useState<ContractChangeReview[]>([])
 
   // Auth State
   const [isAuthenticated, setIsAuthenticated] = useState(() => !!localStorage.getItem('token'))
@@ -232,6 +233,8 @@ function App() {
     setPendingTab(null)
     setShowLoginModal(true)
     setClients([])
+    setContractChangeReviews([])
+    setSyncResult(null)
     setResults(null)
     setResultFile('')
     setResultDataUrl('')
@@ -324,6 +327,24 @@ function App() {
       setLoading(false)
     }
   }
+
+  const loadContractChangeReviews = async (keyword: string = search) => {
+    try {
+      const normalizedKeyword = keyword.trim()
+      const query = normalizedKeyword ? `?search=${encodeURIComponent(normalizedKeyword)}` : ''
+      const { data } = await apiJson<{ reviews?: ContractChangeReview[] }>(
+        `/api/clients/contract-change-reviews${query}`,
+      )
+      setContractChangeReviews(data.reviews || [])
+    } catch (error: unknown) {
+      if (isApiHttpError(error) && error.status === 401) {
+        handleUnauthorized()
+        return
+      }
+      console.error('Failed to load contract change reviews:', error)
+    }
+  }
+
   const loadDashboard = async () => {
     try {
       const { data } = await apiJson<{ stats: any; trend: any[] }>('/api/dashboard')
@@ -429,6 +450,7 @@ function App() {
     }
     setShowLoginModal(false)
     loadClients()
+    loadContractChangeReviews()
     loadDashboard()
     loadLatestResult()
     loadLatestEstimateResult()
@@ -438,6 +460,7 @@ function App() {
     if (!isAuthenticated || activeTab !== 'clients') return
     const timer = window.setTimeout(() => {
       void loadClients(search)
+      void loadContractChangeReviews(search)
     }, 250)
     return () => window.clearTimeout(timer)
   }, [search, activeTab, isAuthenticated])
@@ -467,16 +490,6 @@ function App() {
       setActiveTab('clientLedger')
     }
   }, [activeTab, selectedClientName])
-
-  // Auto-hide sync result after 5 seconds
-  useEffect(() => {
-    if (syncResult) {
-      const timer = setTimeout(() => {
-        setSyncResult(null)
-      }, 5000)
-      return () => clearTimeout(timer)
-    }
-  }, [syncResult])
 
   useEffect(() => {
     const onMouseDown = (event: MouseEvent) => {
@@ -735,7 +748,18 @@ function App() {
       setToastMessage('正在同步飞书数据...')
       setToastType('info')
 
-      const { data: result } = await apiJson<{ status?: string; count?: number; message?: string; detail?: string }>(
+      const { data: result } = await apiJson<{
+        status?: string
+        count?: number
+        message?: string
+        detail?: string
+        line_count?: number
+        client_count?: number
+        new_client_count?: number
+        unchanged_count?: number
+        pending_count?: number
+        new_clients?: string[]
+      }>(
         '/api/clients/sync-feishu',
         {
         method: 'POST',
@@ -748,9 +772,16 @@ function App() {
         setSyncResult({
           count: Number(result.count || 0),
           message: String(result.message || '同步成功'),
-          time: new Date().toLocaleTimeString()
+          time: new Date().toLocaleTimeString(),
+          line_count: Number(result.line_count || 0),
+          client_count: Number(result.client_count || result.count || 0),
+          new_client_count: Number(result.new_client_count || 0),
+          unchanged_count: Number(result.unchanged_count || 0),
+          pending_count: Number(result.pending_count || 0),
+          new_clients: Array.isArray(result.new_clients) ? result.new_clients.map(String) : [],
         })
-        loadClients()
+        await loadClients()
+        await loadContractChangeReviews()
       } else {
         setToastMessage(`同步失败: ${result.detail || result.message || '未知错误'}`)
         setToastType('error')
@@ -761,6 +792,117 @@ function App() {
         return
       }
       setToastMessage(`同步失败: ${getApiErrorMessage(error, '未知错误')}`)
+      setToastType('error')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleApproveContractChangeReview = async (reviewId: number, overrideNewFeeClause?: string) => {
+    if (!(currentRole === 'admin' || currentRole === 'super_admin' || currentPermissions.includes('client_write'))) {
+      setToastMessage('当前账号没有 client_write 权限')
+      setToastType('error')
+      return
+    }
+
+    setLoading(true)
+    try {
+      const payload =
+        overrideNewFeeClause !== undefined
+          ? JSON.stringify({ override_new_fee_clause: overrideNewFeeClause })
+          : undefined
+      await apiJson(`/api/clients/contract-change-reviews/${reviewId}/approve`, {
+        method: 'POST',
+        headers: payload
+          ? {
+              'Content-Type': 'application/json',
+            }
+          : undefined,
+        body: payload,
+      })
+      await loadClients(search)
+      await loadContractChangeReviews(search)
+      setToastMessage('已确认并应用条款变更')
+      setToastType('success')
+    } catch (error: unknown) {
+      if (isApiHttpError(error) && error.status === 401) {
+        handleUnauthorized()
+        return
+      }
+      setToastMessage(`确认失败: ${getApiErrorMessage(error, '未知错误')}`)
+      setToastType('error')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleIgnoreContractChangeReview = async (reviewId: number) => {
+    if (!(currentRole === 'admin' || currentRole === 'super_admin' || currentPermissions.includes('client_write'))) {
+      setToastMessage('当前账号没有 client_write 权限')
+      setToastType('error')
+      return
+    }
+
+    setLoading(true)
+    try {
+      await apiJson(`/api/clients/contract-change-reviews/${reviewId}/ignore`, {
+        method: 'POST',
+      })
+      await loadContractChangeReviews(search)
+      setToastMessage('已忽略本次条款变更')
+      setToastType('success')
+    } catch (error: unknown) {
+      if (isApiHttpError(error) && error.status === 401) {
+        handleUnauthorized()
+        return
+      }
+      setToastMessage(`忽略失败: ${getApiErrorMessage(error, '未知错误')}`)
+      setToastType('error')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleBatchApproveContractChangeReviews = async (
+    reviewIds: number[],
+    overrideNewFeeClauseByReviewId?: Record<number, string>,
+  ) => {
+    if (!(currentRole === 'admin' || currentRole === 'super_admin' || currentPermissions.includes('client_write'))) {
+      setToastMessage('当前账号没有 client_write 权限')
+      setToastType('error')
+      return
+    }
+    if (reviewIds.length === 0) {
+      setToastMessage('请先选择待确认记录')
+      setToastType('info')
+      return
+    }
+
+    setLoading(true)
+    try {
+      const { data } = await apiJson<{ approved_count?: number }>(
+        '/api/clients/contract-change-reviews/batch-approve',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            review_ids: reviewIds,
+            override_new_fee_clause_by_review_id: overrideNewFeeClauseByReviewId,
+          }),
+        },
+      )
+      await loadClients(search)
+      await loadContractChangeReviews(search)
+      setToastMessage(`已批量确认 ${Number(data.approved_count || 0)} 条变更`)
+      setToastType('success')
+    } catch (error: unknown) {
+      if (isApiHttpError(error) && error.status === 401) {
+        handleUnauthorized()
+        return
+      }
+      setToastMessage(`批量确认失败: ${getApiErrorMessage(error, '未知错误')}`)
       setToastType('error')
     } finally {
       setLoading(false)
@@ -1143,6 +1285,7 @@ function App() {
         onOpenClientDetail={openClientDetail}
         onCloseClientDetail={closeClientDetail}
         syncResult={syncResult}
+        contractChangeReviews={contractChangeReviews}
         clients={clients}
         editingClient={editingClient}
         editClause={editClause}
@@ -1154,6 +1297,15 @@ function App() {
         onSaveClause={() => handleAction(saveClause)}
         onCloseEdit={closeEdit}
         onOpenEdit={(client) => handleAction(() => openEdit(client))}
+        onApproveContractChangeReview={(reviewId, overrideNewFeeClause) =>
+          handleAction(() => handleApproveContractChangeReview(reviewId, overrideNewFeeClause))
+        }
+        onIgnoreContractChangeReview={(reviewId) => handleAction(() => handleIgnoreContractChangeReview(reviewId))}
+        onBatchApproveContractChangeReviews={(reviewIds, overrideNewFeeClauseByReviewId) =>
+          handleAction(() =>
+            handleBatchApproveContractChangeReviews(reviewIds, overrideNewFeeClauseByReviewId),
+          )
+        }
         results={results}
         pagedResultsData={pagedResultsData}
         resultsTotalRows={resultsTotalRows}

@@ -149,11 +149,22 @@ class FeishuService:
             return {"status": "error", "message": str(exc)}
         client_count = sync_stats.get("client_count", 0)
         line_count = sync_stats.get("line_count", 0)
+        new_client_count = sync_stats.get("new_client_count", 0)
+        pending_count = sync_stats.get("pending_count", 0)
+        unchanged_count = sync_stats.get("unchanged_count", 0)
+        new_clients = sync_stats.get("new_clients", [])
         
         return {
             "status": "ok", 
-            "message": f"成功同步 {line_count} 条飞书原始行，聚合 {client_count} 条客户条款",
+            "message": (
+                f"成功同步 {line_count} 条飞书原始行，聚合 {client_count} 条客户条款；"
+                f"新增 {new_client_count} 条，待确认 {pending_count} 条，未变化 {unchanged_count} 条"
+            ),
             "count": client_count,
             "line_count": line_count,
-            "client_count": client_count
+            "client_count": client_count,
+            "new_client_count": new_client_count,
+            "pending_count": pending_count,
+            "unchanged_count": unchanged_count,
+            "new_clients": new_clients,
         }

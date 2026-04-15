@@ -7,7 +7,15 @@ from sqlalchemy import create_engine, desc, func, and_, or_, inspect, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker, Session
 from pathlib import Path
-from .models import Base, Client, BillingHistory, ClientMonthlyDetailStats, ClientMonthlyNote, ClientMonthlyStats
+from .models import (
+    Base,
+    BillingHistory,
+    Client,
+    ClientContractChangeReview,
+    ClientMonthlyDetailStats,
+    ClientMonthlyNote,
+    ClientMonthlyStats,
+)
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 import logging
@@ -170,6 +178,65 @@ def ensure_client_monthly_notes_table():
             )
     except OperationalError as exc:
         logger.warning("ensure_client_monthly_notes_table skipped due to database operational error: %s", exc)
+
+
+def ensure_client_contract_change_reviews_table():
+    """
+    Ensure contract change review table exists for Feishu sync manual confirmation.
+    Safe to run repeatedly.
+    """
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS client_contract_change_reviews (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        client_name TEXT NOT NULL,
+                        source_type TEXT NOT NULL,
+                        source_token TEXT NOT NULL,
+                        sync_batch_id TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'pending',
+                        change_fields_json TEXT NOT NULL DEFAULT '[]',
+                        current_business_type TEXT,
+                        new_business_type TEXT,
+                        current_department TEXT,
+                        new_department TEXT,
+                        current_entity TEXT,
+                        new_entity TEXT,
+                        current_fee_clause TEXT,
+                        new_fee_clause TEXT,
+                        current_payment_term TEXT,
+                        new_payment_term TEXT,
+                        reviewed_at DATETIME,
+                        reviewed_by TEXT,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_contract_change_reviews_source "
+                    "ON client_contract_change_reviews (source_type, source_token)"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_contract_change_reviews_status_client "
+                    "ON client_contract_change_reviews (status, client_name)"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ux_contract_change_reviews_pending_client_source "
+                    "ON client_contract_change_reviews (client_name, source_type, source_token) "
+                    "WHERE status = 'pending'"
+                )
+            )
+    except OperationalError as exc:
+        logger.warning("ensure_client_contract_change_reviews_table skipped due to database operational error: %s", exc)
 
 
 def ensure_operation_audit_table():
@@ -369,6 +436,216 @@ def get_client_by_name(name: str, db: Session = None) -> Optional[Dict]:
     finally:
         if should_close:
             db.close()
+
+
+def _normalize_review_value(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text_value = str(value).strip()
+    return text_value if text_value else None
+
+
+def _serialize_contract_change_review(record: ClientContractChangeReview) -> Dict[str, Any]:
+    try:
+        change_fields = json.loads(record.change_fields_json or "[]")
+    except Exception:
+        change_fields = []
+    if not isinstance(change_fields, list):
+        change_fields = []
+
+    return {
+        "id": record.id,
+        "client_name": record.client_name,
+        "source_type": record.source_type,
+        "source_token": record.source_token,
+        "sync_batch_id": record.sync_batch_id,
+        "status": record.status,
+        "change_fields": [str(item) for item in change_fields],
+        "current_business_type": record.current_business_type,
+        "new_business_type": record.new_business_type,
+        "current_department": record.current_department,
+        "new_department": record.new_department,
+        "current_entity": record.current_entity,
+        "new_entity": record.new_entity,
+        "current_fee_clause": record.current_fee_clause,
+        "new_fee_clause": record.new_fee_clause,
+        "current_payment_term": record.current_payment_term,
+        "new_payment_term": record.new_payment_term,
+        "reviewed_at": record.reviewed_at,
+        "reviewed_by": record.reviewed_by,
+        "created_at": record.created_at,
+        "updated_at": record.updated_at,
+    }
+
+
+def list_contract_change_reviews(search: str = None, db: Session = None) -> List[Dict]:
+    should_close = False
+    if db is None:
+        db = SessionLocal()
+        should_close = True
+    try:
+        query = db.query(ClientContractChangeReview).filter(ClientContractChangeReview.status == "pending")
+        if search and search.strip():
+            keyword = f"%{search.strip()}%"
+            query = query.filter(ClientContractChangeReview.client_name.like(keyword))
+        results = query.order_by(desc(ClientContractChangeReview.updated_at), ClientContractChangeReview.id.desc()).all()
+        return [_serialize_contract_change_review(record) for record in results]
+    finally:
+        if should_close:
+            db.close()
+
+
+def _apply_review_to_client_record(client_record: Client, review_record: ClientContractChangeReview) -> None:
+    client_record.business_type = _normalize_review_value(review_record.new_business_type)
+    client_record.entity = _normalize_review_value(review_record.new_entity)
+    client_record.fee_clause = _normalize_review_value(review_record.new_fee_clause)
+    client_record.payment_term = _normalize_review_value(review_record.new_payment_term)
+    client_record.updated_at = datetime.now()
+
+
+def _ensure_fee_clause_in_change_fields(review_record: ClientContractChangeReview) -> None:
+    try:
+        change_fields = json.loads(review_record.change_fields_json or "[]")
+    except Exception:
+        change_fields = []
+    if not isinstance(change_fields, list):
+        change_fields = []
+    if "fee_clause" not in change_fields:
+        change_fields.append("fee_clause")
+    review_record.change_fields_json = json.dumps(change_fields, ensure_ascii=False)
+
+
+def approve_contract_change_review(
+    review_id: int,
+    reviewer: str,
+    db: Session = None,
+    override_new_fee_clause: Optional[str] = None,
+) -> Optional[Dict]:
+    should_close = False
+    if db is None:
+        db = SessionLocal()
+        should_close = True
+    try:
+        review = db.query(ClientContractChangeReview).filter(
+            ClientContractChangeReview.id == review_id,
+            ClientContractChangeReview.status == "pending",
+        ).first()
+        if not review:
+            return None
+
+        if override_new_fee_clause is not None:
+            review.new_fee_clause = _normalize_review_value(override_new_fee_clause)
+            _ensure_fee_clause_in_change_fields(review)
+
+        client_record = db.query(Client).filter(Client.name == review.client_name).first()
+        if client_record is None:
+            client_record = Client(name=review.client_name)
+            db.add(client_record)
+            db.flush()
+
+        _apply_review_to_client_record(client_record, review)
+        review.status = "approved"
+        review.reviewed_by = str(reviewer or "").strip() or None
+        review.reviewed_at = datetime.now()
+        review.updated_at = datetime.now()
+        db.commit()
+        db.refresh(review)
+        return _serialize_contract_change_review(review)
+    finally:
+        if should_close:
+            db.close()
+
+
+def ignore_contract_change_review(review_id: int, reviewer: str, db: Session = None) -> bool:
+    should_close = False
+    if db is None:
+        db = SessionLocal()
+        should_close = True
+    try:
+        review = db.query(ClientContractChangeReview).filter(
+            ClientContractChangeReview.id == review_id,
+            ClientContractChangeReview.status == "pending",
+        ).first()
+        if not review:
+            return False
+
+        review.status = "ignored"
+        review.reviewed_by = str(reviewer or "").strip() or None
+        review.reviewed_at = datetime.now()
+        review.updated_at = datetime.now()
+        db.commit()
+        return True
+    finally:
+        if should_close:
+            db.close()
+
+
+def batch_approve_contract_change_reviews(
+    review_ids: List[int],
+    reviewer: str,
+    db: Session = None,
+    override_new_fee_clause_by_review_id: Optional[Dict[int, str]] = None,
+) -> Dict[str, Any]:
+    should_close = False
+    if db is None:
+        db = SessionLocal()
+        should_close = True
+    try:
+        normalized_ids = sorted({int(review_id) for review_id in review_ids if review_id})
+        if not normalized_ids:
+            return {"approved_count": 0}
+
+        reviews = db.query(ClientContractChangeReview).filter(
+            ClientContractChangeReview.id.in_(normalized_ids),
+            ClientContractChangeReview.status == "pending",
+        ).all()
+        if not reviews:
+            return {"approved_count": 0}
+
+        override_map: Dict[int, str] = {}
+        if override_new_fee_clause_by_review_id:
+            for key, value in override_new_fee_clause_by_review_id.items():
+                try:
+                    review_key = int(key)
+                except (TypeError, ValueError):
+                    continue
+                if value is None:
+                    continue
+                override_map[review_key] = str(value)
+
+        reviewer_name = str(reviewer or "").strip() or None
+        reviewed_at = datetime.now()
+        clients_map = {
+            record.name: record
+            for record in db.query(Client).filter(Client.name.in_([review.client_name for review in reviews])).all()
+        }
+
+        approved_count = 0
+        for review in reviews:
+            if review.id in override_map:
+                review.new_fee_clause = _normalize_review_value(override_map[review.id])
+                _ensure_fee_clause_in_change_fields(review)
+
+            client_record = clients_map.get(review.client_name)
+            if client_record is None:
+                client_record = Client(name=review.client_name)
+                db.add(client_record)
+                db.flush()
+                clients_map[review.client_name] = client_record
+
+            _apply_review_to_client_record(client_record, review)
+            review.status = "approved"
+            review.reviewed_by = reviewer_name
+            review.reviewed_at = reviewed_at
+            review.updated_at = reviewed_at
+            approved_count += 1
+
+        db.commit()
+        return {"approved_count": approved_count}
+    finally:
+        if should_close:
+            db.close()
+
 
 def update_client(client_id: int, fee_clause: str, db: Session = None) -> bool:
     """更新客户条款"""
