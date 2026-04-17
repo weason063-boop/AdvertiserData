@@ -33,12 +33,7 @@
             "rate": 0.10
         }
     },
-    "post_calculation_overrides": {
-        "能用科技": {
-            "action": "move_fixed_to_fee",
-            "description": "用户指出 '1000' 是阶梯服务费，不是固定服务费，将固定费移到服务费列"
-        }
-    },
+    "post_calculation_overrides": {},
     "label_aliases": {
         "哇鹅默认": ""
     }

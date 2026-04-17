@@ -9,6 +9,7 @@
 import logging
 import re
 from datetime import datetime
+from functools import lru_cache
 from typing import Tuple, Optional
 
 import pandas as pd
@@ -48,49 +49,71 @@ for _k_list in MEDIA_KEYWORDS.values():
     ALL_MEDIA_KEYWORDS.update(_k_list)
 
 
+@lru_cache(maxsize=256)
+def _keyword_regex(keyword: str) -> re.Pattern[str]:
+    escaped = re.escape(str(keyword))
+    # Avoid prefix collisions such as "TT" accidentally matching "TTD".
+    if re.search(r'[A-Za-z0-9]', str(keyword)):
+        # Keep numeric-adjacent forms (e.g. "TTD1500/月"), but block letter
+        # prefix/suffix collisions (e.g. "TT" inside "TTD").
+        return re.compile(rf'(?<![A-Za-z]){escaped}(?![A-Za-z])', re.IGNORECASE)
+    return re.compile(escaped, re.IGNORECASE)
+
+
+def _find_keyword_match(text: str, keyword: str, *, start: int = 0):
+    if not text:
+        return None
+    return _keyword_regex(str(keyword)).search(text, pos=max(int(start or 0), 0))
+
+
+def _contains_keyword(text: str, keyword: str) -> bool:
+    return _find_keyword_match(text, keyword) is not None
+
+
 def _extract_media_segment(line, target_keywords):
     """
-    当一行包含多个媒介关键词时，提取目标媒介所属的子段落。
-    避免跨媒介正则误匹配。
-
-    例如: line = "GG 1000+FB 1000+TT 500+10%"
-      target_keywords=['FB','Facebook','Meta'] → "FB 1000"
-      target_keywords=['TT','TikTok']          → "TT 500+10%"
+    Extract target-media segment from a multi-media clause line.
     """
-    line_lower = line.lower()
+    line = str(line or '')
+    target_keywords = [str(kw) for kw in target_keywords if str(kw).strip()]
     target_kw_set = {kw.lower() for kw in target_keywords}
 
-    # 找到目标媒介关键词在行中的最早位置
     target_pos = len(line)
     target_kw_end = target_pos
     for kw in target_keywords:
-        idx = line_lower.find(kw.lower())
-        if 0 <= idx < target_pos:
-            target_pos = idx
-            target_kw_end = idx + len(kw)
+        match = _find_keyword_match(line, kw)
+        if match and match.start() < target_pos:
+            target_pos = match.start()
+            target_kw_end = match.end()
 
     if target_pos >= len(line):
         return None
 
-    # 找到目标关键词之后、最近的其他媒介关键词位置
     next_media_pos = len(line)
     for kw_list in MEDIA_KEYWORDS.values():
         for kw in kw_list:
             if kw.lower() in target_kw_set:
                 continue
-            idx = line_lower.find(kw.lower(), target_kw_end)
-            if 0 <= idx < next_media_pos:
-                # 检查 target_kw_end 和 idx 之间是否只有标点/分隔符
-                text_between = line[target_kw_end:idx]
-                clean_text = re.sub(r'[\s\+＋、，,。/\|&和及与]', '', text_between)
-                if not clean_text:
-                    # 如果只有分隔符，说明它们是紧连着的并排媒介（例: GG、TT），属于同一费率组，不应在此截断
-                    continue
-                next_media_pos = idx
+            match = _find_keyword_match(line, kw, start=target_kw_end)
+            if not match:
+                continue
+            idx = match.start()
+            if idx >= next_media_pos:
+                continue
+
+            text_between = line[target_kw_end:idx]
+            # strip common separators; if nothing remains, same grouped media list
+            clean_text = re.sub(r'[\s\+\uFF0B\u3001\uFF0C,\u3002;\uFF1B\|&]', '', text_between)
+            if not clean_text:
+                continue
+            # If no explicit numeric fee signal appears between keywords,
+            # keep them in one grouped segment and use the trailing shared rate.
+            if not re.search(r'\d|%', text_between):
+                continue
+            next_media_pos = idx
 
     segment = line[target_pos:next_media_pos].strip()
-    # 去掉尾部用作段落分隔的 +
-    segment = segment.rstrip('+＋').strip()
+    segment = segment.rstrip('+\uFF0B').strip()
     return segment if segment else None
 
 
@@ -409,14 +432,14 @@ def parse_fee_clause(
     active_media_context = False
 
     for line in lines:
-        contains_target = any(kw.lower() in line.lower() for kw in keywords)
+        contains_target = any(_contains_keyword(line, kw) for kw in keywords)
 
         contains_other = False
         if not contains_target:
             for kw in ALL_MEDIA_KEYWORDS:
                 if kw in keywords:
                     continue
-                if kw.lower() in line.lower():
+                if _contains_keyword(line, kw):
                     contains_other = True
                     break
 
@@ -426,7 +449,7 @@ def parse_fee_clause(
             active_media_context = False
 
         if not active_media_context and not contains_target:
-            has_any_media = any(kw.lower() in clause.lower() for kw in ALL_MEDIA_KEYWORDS)
+            has_any_media = any(_contains_keyword(clause, kw) for kw in ALL_MEDIA_KEYWORDS)
             if has_any_media:
                 continue
 
@@ -440,7 +463,7 @@ def parse_fee_clause(
         match_text = line
         if contains_target:
             _has_other_in_line = any(
-                kw.lower() in line.lower()
+                _contains_keyword(line, kw)
                 for kw in ALL_MEDIA_KEYWORDS
                 if kw not in keywords
             )

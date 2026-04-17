@@ -154,6 +154,25 @@ class TestLiushuiRules:
             assert fixed == 0.0
 
 
+class TestMultiMediaKeywordMatching:
+    """多媒介同组费率 + 关键词前缀冲突回归测试"""
+
+    def test_grouped_media_rate_applies_to_google(self):
+        clause = "TTD、Teads、DSP 5%；GG、FB、TT 8%。"
+        rate, fixed = parse_fee_clause(clause, "Google", "代投", 10000, client_name="云鲸中东")
+        assert rate == 0.08
+        assert fixed == 0.0
+
+    def test_tiktok_should_not_misread_ttd_prefix(self):
+        clause = "TTD、Teads、DSP 5%；GG、FB、TT 8%。"
+        tt_rate, tt_fixed = parse_fee_clause(clause, "TikTok", "代投", 10000, client_name="云鲸中东")
+        ttd_rate, ttd_fixed = parse_fee_clause(clause, "TTD", "代投", 10000, client_name="云鲸中东")
+        assert tt_rate == 0.08
+        assert tt_fixed == 0.0
+        assert ttd_rate == 0.05
+        assert ttd_fixed == 0.0
+
+
 class TestSpecialClauses:
     """特殊条款处理测试"""
 

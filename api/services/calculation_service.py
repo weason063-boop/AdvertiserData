@@ -236,69 +236,93 @@ class CalculationService:
             return "流水"
         return text
 
-    def _validate_estimate_workbook(self, file_path: str) -> None:
-        workbook = self._open_excel_workbook(file_path, context="预估模板上传文件")
-        try:
-            if self._ESTIMATE_SHEET_NAME not in workbook.sheet_names:
-                raise HTTPException(status_code=400, detail="预估模板缺少 Sheet1")
-            header_df = pd.read_excel(workbook, sheet_name=self._ESTIMATE_SHEET_NAME, nrows=0)
+    def _resolve_estimate_sheet_name(self, workbook: pd.ExcelFile) -> str:
+        preferred_sheet_names: list[str] = []
+        if self._ESTIMATE_SHEET_NAME in workbook.sheet_names:
+            preferred_sheet_names.append(self._ESTIMATE_SHEET_NAME)
+        preferred_sheet_names.extend(
+            sheet_name for sheet_name in workbook.sheet_names if sheet_name != self._ESTIMATE_SHEET_NAME
+        )
+
+        for sheet_name in preferred_sheet_names:
+            header_df = pd.read_excel(workbook, sheet_name=sheet_name, nrows=0)
             columns = [str(col).strip() for col in header_df.columns.tolist()]
-            missing_columns = [col for col in self._ESTIMATE_REQUIRED_COLUMNS if col not in columns]
-            if missing_columns:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"预估模板 Sheet1 缺少必需列：{'、'.join(missing_columns)}",
-                )
+            if not set(self._ESTIMATE_REQUIRED_COLUMNS).issubset(set(columns)):
+                continue
+
             consumption_col = self._find_estimate_dynamic_column(
                 columns,
-                include_words=("消耗", "预估"),
+                include_words=("\u6d88\u8017", "\u9884\u4f30"),
             )
             gross_profit_col = self._find_estimate_dynamic_column(
                 columns,
-                include_words=("毛利", "预估"),
+                include_words=("\u6bdb\u5229", "\u9884\u4f30"),
             )
-            if not consumption_col:
-                raise HTTPException(status_code=400, detail="预估模板 Sheet1 缺少“消耗预估”动态列")
-            if not gross_profit_col:
-                raise HTTPException(status_code=400, detail="预估模板 Sheet1 缺少“毛利预估”动态列")
+            if consumption_col and gross_profit_col:
+                return sheet_name
+
+        raise HTTPException(
+            status_code=400,
+            detail="\u9884\u4f30\u6a21\u677f\u7f3a\u5c11\u53ef\u8bc6\u522b\u7684\u5de5\u4f5c\u8868\uff0c\u8bf7\u68c0\u67e5\u5fc5\u586b\u5217\u4e0e\u201c\u6d88\u8017\u9884\u4f30\u201d/\u201c\u6bdb\u5229\u9884\u4f30\u201d\u52a8\u6001\u5217",
+        )
+
+    def _validate_estimate_workbook(self, file_path: str) -> None:
+        workbook = self._open_excel_workbook(file_path, context="\u9884\u4f30\u6a21\u677f\u4e0a\u4f20\u6587\u4ef6")
+        try:
+            self._resolve_estimate_sheet_name(workbook)
         finally:
             workbook.close()
 
     def _prepare_estimate_calculation_input(
         self,
         file_path: str,
-    ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str, str]:
-        sheet1_df = pd.read_excel(file_path, sheet_name=self._ESTIMATE_SHEET_NAME)
-        column_lookup = {str(col).strip(): col for col in sheet1_df.columns.tolist()}
+    ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str, str, str]:
+        workbook = self._open_excel_workbook(file_path, context="\u9884\u4f30\u6a21\u677f\u4e0a\u4f20\u6587\u4ef6")
+        try:
+            estimate_sheet_name = self._resolve_estimate_sheet_name(workbook)
+        finally:
+            workbook.close()
+
+        source_sheet_df = pd.read_excel(file_path, sheet_name=estimate_sheet_name)
+        column_lookup = {str(col).strip(): col for col in source_sheet_df.columns.tolist()}
         missing_columns = [col for col in self._ESTIMATE_REQUIRED_COLUMNS if col not in column_lookup]
         if missing_columns:
-            raise HTTPException(status_code=400, detail=f"预估模板 Sheet1 缺少必需列：{'、'.join(missing_columns)}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"\u9884\u4f30\u6a21\u677f\u5de5\u4f5c\u8868 {estimate_sheet_name} \u7f3a\u5c11\u5fc5\u9700\u5217\uff1a{'\u3001'.join(missing_columns)}",
+            )
 
         normalized_columns = list(column_lookup.keys())
         consumption_column_name = self._find_estimate_dynamic_column(
             normalized_columns,
-            include_words=("消耗", "预估"),
+            include_words=("\u6d88\u8017", "\u9884\u4f30"),
         )
         gross_profit_column_name = self._find_estimate_dynamic_column(
             normalized_columns,
-            include_words=("毛利", "预估"),
+            include_words=("\u6bdb\u5229", "\u9884\u4f30"),
         )
         if not consumption_column_name:
-            raise HTTPException(status_code=400, detail="预估模板 Sheet1 缺少“消耗预估”动态列")
+            raise HTTPException(
+                status_code=400,
+                detail=f"\u9884\u4f30\u6a21\u677f\u5de5\u4f5c\u8868 {estimate_sheet_name} \u7f3a\u5c11\u201c\u6d88\u8017\u9884\u4f30\u201d\u52a8\u6001\u5217",
+            )
         if not gross_profit_column_name:
-            raise HTTPException(status_code=400, detail="预估模板 Sheet1 缺少“毛利预估”动态列")
+            raise HTTPException(
+                status_code=400,
+                detail=f"\u9884\u4f30\u6a21\u677f\u5de5\u4f5c\u8868 {estimate_sheet_name} \u7f3a\u5c11\u201c\u6bdb\u5229\u9884\u4f30\u201d\u52a8\u6001\u5217",
+            )
 
         rows = pd.DataFrame(
             {
-                "_source_client": sheet1_df[column_lookup["母公司"]].map(self._normalize_estimate_text),
-                "_service_type": sheet1_df[column_lookup["投放类型"]].map(self._normalize_estimate_service_type),
-                "媒介": sheet1_df[column_lookup["媒介"]].map(self._normalize_estimate_text),
+                "_source_client": source_sheet_df[column_lookup["\u6bcd\u516c\u53f8"]].map(self._normalize_estimate_text),
+                "_service_type": source_sheet_df[column_lookup["\u6295\u653e\u7c7b\u578b"]].map(self._normalize_estimate_service_type),
+                "\u5a92\u4ecb": source_sheet_df[column_lookup["\u5a92\u4ecb"]].map(self._normalize_estimate_text),
                 "_estimate_consumption": pd.to_numeric(
-                    sheet1_df[column_lookup[consumption_column_name]],
+                    source_sheet_df[column_lookup[consumption_column_name]],
                     errors="coerce",
                 ).fillna(0.0),
                 "_estimate_gross_profit": pd.to_numeric(
-                    sheet1_df[column_lookup[gross_profit_column_name]],
+                    source_sheet_df[column_lookup[gross_profit_column_name]],
                     errors="coerce",
                 ).fillna(0.0),
             }
@@ -306,10 +330,13 @@ class CalculationService:
         rows = rows[
             (rows["_source_client"] != "")
             & (rows["_service_type"] != "")
-            & (rows["媒介"] != "")
+            & (rows["\u5a92\u4ecb"] != "")
         ].copy()
         if rows.empty:
-            raise HTTPException(status_code=400, detail="预估模板 Sheet1 没有可计算的数据行")
+            raise HTTPException(
+                status_code=400,
+                detail=f"\u9884\u4f30\u6a21\u677f\u5de5\u4f5c\u8868 {estimate_sheet_name} \u6ca1\u6709\u53ef\u8ba1\u7b97\u7684\u6570\u636e\u884c",
+            )
 
         from billing.contract_loader import load_contract_terms_from_db
 
@@ -331,7 +358,7 @@ class CalculationService:
 
         grouped = (
             rows.groupby(
-                ["_source_client", "_service_type", "媒介", "_contract_client"],
+                ["_source_client", "_service_type", "\u5a92\u4ecb", "_contract_client"],
                 as_index=False,
             )[["_estimate_consumption", "_estimate_gross_profit"]]
             .sum()
@@ -339,25 +366,34 @@ class CalculationService:
 
         sheet2_seed_df = grouped.rename(
             columns={
-                "_source_client": "母公司",
-                "_service_type": "服务类型",
+                "_source_client": "\u6bcd\u516c\u53f8",
+                "_service_type": "\u670d\u52a1\u7c7b\u578b",
             }
         )
 
-        calc_input_df = sheet2_seed_df[["_contract_client", "服务类型", "媒介", "_estimate_consumption"]].copy()
-        calc_input_df.rename(columns={"_contract_client": "母公司"}, inplace=True)
-        calc_input_df["代投消耗"] = 0.0
-        calc_input_df["流水消耗"] = 0.0
-        calc_input_df.loc[calc_input_df["服务类型"] == "代投", "代投消耗"] = calc_input_df["_estimate_consumption"]
-        calc_input_df.loc[calc_input_df["服务类型"] == "流水", "流水消耗"] = calc_input_df["_estimate_consumption"]
-        calc_input_df = calc_input_df[["母公司", "媒介", "服务类型", "代投消耗", "流水消耗"]]
+        calc_input_df = sheet2_seed_df[["_contract_client", "\u670d\u52a1\u7c7b\u578b", "\u5a92\u4ecb", "_estimate_consumption"]].copy()
+        calc_input_df.rename(columns={"_contract_client": "\u6bcd\u516c\u53f8"}, inplace=True)
+        calc_input_df["\u4ee3\u6295\u6d88\u8017"] = 0.0
+        calc_input_df["\u6d41\u6c34\u6d88\u8017"] = 0.0
+        calc_input_df.loc[
+            calc_input_df["\u670d\u52a1\u7c7b\u578b"] == "\u4ee3\u6295",
+            "\u4ee3\u6295\u6d88\u8017",
+        ] = calc_input_df["_estimate_consumption"]
+        calc_input_df.loc[
+            calc_input_df["\u670d\u52a1\u7c7b\u578b"] == "\u6d41\u6c34",
+            "\u6d41\u6c34\u6d88\u8017",
+        ] = calc_input_df["_estimate_consumption"]
+        calc_input_df = calc_input_df[
+            ["\u6bcd\u516c\u53f8", "\u5a92\u4ecb", "\u670d\u52a1\u7c7b\u578b", "\u4ee3\u6295\u6d88\u8017", "\u6d41\u6c34\u6d88\u8017"]
+        ]
 
         return (
-            sheet1_df,
+            source_sheet_df,
             sheet2_seed_df,
             calc_input_df,
             consumption_column_name,
             gross_profit_column_name,
+            estimate_sheet_name,
         )
 
     def _build_estimate_sheet2_output(
@@ -805,15 +841,8 @@ class CalculationService:
         try:
             workbook = pd.ExcelFile(file_path)
             try:
-                if self._ESTIMATE_SHEET_NAME not in workbook.sheet_names:
-                    return False
-                header_df = pd.read_excel(workbook, sheet_name=self._ESTIMATE_SHEET_NAME, nrows=0)
-                cols = [str(col).strip() for col in header_df.columns.tolist()]
-                if not set(self._ESTIMATE_REQUIRED_COLUMNS).issubset(set(cols)):
-                    return False
-                consumption_col = self._find_estimate_dynamic_column(cols, include_words=("消耗", "预估"))
-                gross_profit_col = self._find_estimate_dynamic_column(cols, include_words=("毛利", "预估"))
-                return bool(consumption_col and gross_profit_col)
+                self._resolve_estimate_sheet_name(workbook)
+                return True
             finally:
                 workbook.close()
         except Exception:
@@ -1120,6 +1149,7 @@ class CalculationService:
                 calc_input_df,
                 consumption_column_name,
                 gross_profit_column_name,
+                estimate_sheet_name,
             ) = self._prepare_estimate_calculation_input(file_path)
             upload_dir = self._get_upload_dir()
             temp_id = uuid.uuid4().hex
@@ -1150,10 +1180,13 @@ class CalculationService:
             else:
                 output_name = f"{original_path.stem}_estimate_results.xlsx"
             final_output_path = upload_dir / secure_filename(output_name)
+            output_sheet2_name = self._ESTIMATE_OUTPUT_SHEET_NAME
+            if estimate_sheet_name == output_sheet2_name:
+                output_sheet2_name = f"{self._ESTIMATE_OUTPUT_SHEET_NAME}_RESULT"
 
             with pd.ExcelWriter(final_output_path) as writer:
-                sheet1_df.to_excel(writer, index=False, sheet_name=self._ESTIMATE_SHEET_NAME)
-                sheet2_df.to_excel(writer, index=False, sheet_name=self._ESTIMATE_OUTPUT_SHEET_NAME)
+                sheet1_df.to_excel(writer, index=False, sheet_name=estimate_sheet_name)
+                sheet2_df.to_excel(writer, index=False, sheet_name=output_sheet2_name)
 
             result_record = self._register_result(
                 filename=final_output_path.name,

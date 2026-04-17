@@ -51,6 +51,28 @@ def _ensure_loaded():
         load_client_overrides()
 
 
+def _normalize_media_key(media: str) -> str:
+    """Normalize media labels for deterministic exact matching."""
+    if media is None:
+        return ''
+
+    key = str(media).strip().upper()
+    if not key:
+        return ''
+
+    aliases = {
+        'TT': 'TIKTOK',
+        'TIKTOK': 'TIKTOK',
+        'TTD': 'TTD',
+        'FB': 'FACEBOOK',
+        'FACEBOOK': 'FACEBOOK',
+        'META': 'FACEBOOK',
+        'GG': 'GOOGLE',
+        'GOOGLE': 'GOOGLE',
+    }
+    return aliases.get(key, key)
+
+
 def apply_pre_overrides(
     clause: str, media: str, service_type: str, client_name: str
 ) -> Tuple[str, str, Optional[Tuple[float, float]]]:
@@ -58,17 +80,13 @@ def apply_pre_overrides(
     应用客户特殊规则（前置），返回 (修改后的条款, 修改后的服务类型, 直接返回结果或None)
     """
     _ensure_loaded()
+    normalized_media = _normalize_media_key(media)
 
     for keyword, rule in _CLIENT_OVERRIDES.items():
         if keyword not in client_name:
             continue
 
         action = rule.get('action', '')
-
-        # Disable the legacy "all 美的 clients use 5%" override and defer to
-        # per-media contract clauses for current data.
-        if action == 'fixed_rate' and keyword == '\u7f8e\u7684':
-            continue
 
         if action == 'remove_time_constraint':
             clause = re.sub(r'(?:20)?2\d年\d+月起', '', clause)
@@ -91,15 +109,22 @@ def apply_pre_overrides(
             return clause, service_type, (rate, 0.0)
 
         elif action == 'exclude_media':
-            excluded = rule.get('excluded_media', [])
-            if media in excluded:
+            excluded = {
+                normalized
+                for normalized in (
+                    _normalize_media_key(item)
+                    for item in rule.get('excluded_media', [])
+                )
+                if normalized
+            }
+            if normalized_media in excluded:
                 return clause, service_type, (0.0, 0.0)
 
         elif action == 'media_rate':
-            r_media = rule.get('media', '')
+            r_media = _normalize_media_key(rule.get('media', ''))
             r_st = rule.get('service_type', '')
             r_rate = rule.get('rate', 0.0)
-            if r_media in media and service_type == r_st:
+            if r_media == normalized_media and service_type == r_st:
                 return clause, service_type, (r_rate, 0.0)
 
     # 应用标签别名（如 "哇鹅默认" → ""）
@@ -117,12 +142,6 @@ def apply_post_overrides(
     """
     _ensure_loaded()
 
-    # Customer-specific accounting convention: treat this fixed amount as
-    # service fee so reports align with manual finance sheets.
-    if customer_str == '\u638c\u5fc3' and fixed > 0:
-        fee += fixed
-        fixed = 0.0
-
     for keyword, rule in _POST_CALC_OVERRIDES.items():
         if keyword not in customer_str:
             continue
@@ -131,3 +150,4 @@ def apply_post_overrides(
             fee += fixed
             fixed = 0.0
     return fee, fixed
+

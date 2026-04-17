@@ -93,6 +93,88 @@ def _round2(value: float) -> float:
         return round(float(value), 2)
 
 
+def _is_managed_service_type(service_type: str) -> bool:
+    """Return True when current row should be treated as managed-delivery fee scope."""
+    return "代投" in str(service_type or "")
+
+
+def _normalize_service_type(service_type: str) -> str:
+    """
+    Normalize service type variants to canonical labels used by fee branches.
+
+    Canonical values:
+    - 代投
+    - 流水
+    - 代投+流水
+    """
+    text = str(service_type or "").strip()
+    if not text:
+        return ""
+
+    compact = (
+        text.replace(" ", "")
+        .replace("\u3000", "")
+        .replace("＋", "+")
+        .replace("/", "+")
+        .replace("、", "+")
+        .replace("|", "+")
+    )
+    if "代投" in compact and "流水" in compact:
+        return "代投+流水"
+    if "代投" in compact:
+        return "代投"
+    if "流水" in compact:
+        return "流水"
+    return text
+
+
+def _allocate_fixed_fee_by_managed_ratio(
+    *,
+    total_fixed_fee: float,
+    row_managed_consumptions: list[tuple[int, float]],
+    fixed_fee_slots: list[float | None],
+) -> None:
+    """
+    Allocate customer-level fixed fee to managed rows by managed consumption ratio.
+
+    - Only rows with managed consumption > 0 participate.
+    - Keep 2-decimal accounting precision and make sure allocated sum equals total.
+    """
+    rounded_total = _round2(total_fixed_fee)
+    if rounded_total <= 0:
+        return
+
+    positive_rows = [(idx, value) for idx, value in row_managed_consumptions if value > 1e-9]
+    if not positive_rows:
+        return
+
+    basis_total = sum(value for _, value in positive_rows)
+    if basis_total <= 1e-9:
+        return
+
+    total_cents = int((Decimal(str(rounded_total)) * Decimal("100")).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    if total_cents <= 0:
+        return
+
+    allocations: list[list[object]] = []
+    distributed_cents = 0
+    for row_index, managed_value in positive_rows:
+        raw_share = Decimal(total_cents) * Decimal(str(managed_value)) / Decimal(str(basis_total))
+        floor_cents = int(raw_share)
+        remainder = raw_share - Decimal(floor_cents)
+        allocations.append([row_index, floor_cents, remainder])
+        distributed_cents += floor_cents
+
+    remaining_cents = total_cents - distributed_cents
+    if remaining_cents > 0:
+        allocations.sort(key=lambda item: (-item[2], item[0]))
+        for i in range(remaining_cents):
+            allocations[i % len(allocations)][1] += 1
+
+    for row_index, cents, _ in allocations:
+        fixed_fee_slots[int(row_index)] = float(Decimal(int(cents)) / Decimal("100"))
+
+
 def _to_float(value) -> float:
     """Convert mixed spreadsheet values to float safely."""
     if value is None:
@@ -157,14 +239,17 @@ def _standardize_headers(df: pd.DataFrame) -> pd.DataFrame:
                 canonical_series = out[canonical]
                 variant_series = out[variant]
                 if canonical in _NUMERIC_CANONICAL_COLUMNS:
-                    canonical_num = pd.to_numeric(canonical_series, errors="coerce")
+                    # Keep numeric canonical columns in float space to avoid
+                    # pandas dtype upcast errors when merging decimal variants.
+                    canonical_num = pd.to_numeric(canonical_series, errors="coerce").astype(float)
                     variant_num = pd.to_numeric(variant_series, errors="coerce")
                     use_variant_mask = (
                         (canonical_num.isna() | (canonical_num.abs() < 1e-9))
                         & variant_num.notna()
                         & (variant_num.abs() >= 1e-9)
                     )
-                    out.loc[use_variant_mask, canonical] = variant_series.loc[use_variant_mask]
+                    out[canonical] = canonical_num
+                    out.loc[use_variant_mask, canonical] = variant_num.loc[use_variant_mask]
                 else:
                     missing_mask = canonical_series.isna()
                     if canonical_series.dtype == object:
@@ -463,19 +548,40 @@ def calculate_service_fees(
                 combined_consumption[(customer_str, service_type)] = total if pd.notna(total) else 0
 
     service_fees = []
-    fixed_fees = []
+    fixed_fees: list[float | None] = [None] * len(df)
     customer_fixed_fee_filled = set()
+    customer_fixed_fee_totals: dict[str, float] = {}
+    customer_managed_rows: dict[str, list[tuple[int, float]]] = {}
+    unsupported_service_type_logged: set[str] = set()
+    from billing.clause_parser import MEDIA_KEYWORDS
 
-    for _, row in df.iterrows():
+    for row_idx, (_, row) in enumerate(df.iterrows()):
         customer = row["母公司"]
         media = row["媒介"]
-        service_type = str(row.get("服务类型") or "").strip()
+        raw_service_type = str(row.get("服务类型") or "").strip()
+        service_type = _normalize_service_type(raw_service_type)
+        is_managed_service = _is_managed_service_type(service_type)
 
         customer_str = str(customer).strip() if pd.notna(customer) else ""
         clause = contract_terms.get(customer_str, "无")
 
         liushui_consumption = _to_float(row.get("流水消耗"))
         daitou_consumption = _to_float(row.get("代投消耗"))
+        if (
+            service_type not in {"流水", "代投", "代投+流水"}
+            and (abs(liushui_consumption) > 1e-9 or abs(daitou_consumption) > 1e-9)
+        ):
+            warn_key = raw_service_type or "<empty>"
+            if warn_key not in unsupported_service_type_logged:
+                logger.warning(
+                    "Unsupported service type '%s' (normalized '%s'); fee defaults to 0 unless covered by custom rules",
+                    raw_service_type,
+                    service_type,
+                )
+                unsupported_service_type_logged.add(warn_key)
+
+        if is_managed_service and daitou_consumption > 1e-9:
+            customer_managed_rows.setdefault(customer_str, []).append((row_idx, daitou_consumption))
 
         fee = 0.0
         fixed = 0.0
@@ -494,7 +600,7 @@ def calculate_service_fees(
                 client_name=customer_str,
             )
             fee = liushui_consumption * _to_float(rate)
-            fixed = _to_float(fixed)
+            fixed = 0.0
 
         elif service_type == "代投":
             rate, fixed = parse_fee_clause(
@@ -510,7 +616,7 @@ def calculate_service_fees(
             fixed = _to_float(fixed)
 
         elif service_type == "代投+流水":
-            liushui_rate, liushui_fixed = parse_fee_clause(
+            liushui_rate, _liushui_fixed = parse_fee_clause(
                 clause,
                 media,
                 "流水",
@@ -529,11 +635,13 @@ def calculate_service_fees(
                 client_name=customer_str,
             )
             fee = liushui_consumption * _to_float(liushui_rate) + daitou_consumption * _to_float(daitou_rate)
-            fixed = _to_float(liushui_fixed) + _to_float(daitou_fixed)
+            fixed = _to_float(daitou_fixed)
 
         fee = _to_float(fee)
         fixed = _to_float(fixed)
         fee, fixed = apply_post_overrides(customer_str, fee, fixed)
+        if not is_managed_service:
+            fixed = 0.0
 
         waiver_match = re.search(r'合计消耗\s*[*×]?\s*(\d+(?:\.\d+)?)\s*%\s*[大超]于(?:等于)?\s*(\d+)', str(clause))
         if waiver_match and fixed > 0:
@@ -549,23 +657,24 @@ def calculate_service_fees(
                 fixed = 0.0
 
         service_fees.append(_round2(fee) if fee > 0 else None)
+        if is_managed_service and fixed > 0:
+            contains_ge_han = any(kw in str(clause) for kw in ["含", "各", "单渠道", "单个渠道", "每个"])
+            contains_heji = any(kw in str(clause) for kw in ["合计", "总体", "一共"])
+            media_aliases = MEDIA_KEYWORDS.get(media, [media])
+            media_in_clause = any(a.lower() in str(clause).lower() for a in media_aliases)
+            is_per_media = (contains_ge_han or media_in_clause) and not contains_heji
+            dedup_key = (customer_str, media) if is_per_media else customer_str
 
-        from billing.clause_parser import MEDIA_KEYWORDS
-        
-        contains_ge_han = any(kw in str(clause) for kw in ["含", "各", "单渠道", "单个渠道", "每个"])
-        contains_heji = any(kw in str(clause) for kw in ["合计", "总体", "一共"])
-        
-        media_aliases = MEDIA_KEYWORDS.get(media, [media])
-        media_in_clause = any(a.lower() in str(clause).lower() for a in media_aliases)
-        
-        is_per_media = (contains_ge_han or media_in_clause) and not contains_heji
-        dedup_key = (customer_str, media) if is_per_media else customer_str
+            if dedup_key not in customer_fixed_fee_filled:
+                customer_fixed_fee_totals[customer_str] = customer_fixed_fee_totals.get(customer_str, 0.0) + _round2(fixed)
+                customer_fixed_fee_filled.add(dedup_key)
 
-        if fixed > 0 and dedup_key not in customer_fixed_fee_filled:
-            fixed_fees.append(_round2(fixed))
-            customer_fixed_fee_filled.add(dedup_key)
-        else:
-            fixed_fees.append(None)
+    for customer_str, total_fixed_fee in customer_fixed_fee_totals.items():
+        _allocate_fixed_fee_by_managed_ratio(
+            total_fixed_fee=total_fixed_fee,
+            row_managed_consumptions=customer_managed_rows.get(customer_str, []),
+            fixed_fee_slots=fixed_fees,
+        )
 
     if "服务费" in df.columns:
         df["服务费"] = service_fees

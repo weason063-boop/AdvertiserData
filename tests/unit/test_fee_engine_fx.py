@@ -304,3 +304,176 @@ def test_other_sheet_jpy_alias_normalizes_to_jpy(tmp_path, monkeypatch):
     result = pd.read_excel(out)
     assert result["币种"].iloc[0] == "JPY"
     assert pytest.approx(result["服务费"].fillna(0).sum(), rel=1e-4) == 70.42
+
+
+def test_fixed_fee_allocated_by_managed_consumption_ratio(tmp_path, monkeypatch):
+    src = tmp_path / "consumption.xlsx"
+    out = tmp_path / "out.xlsx"
+
+    df = pd.DataFrame(
+        [
+            {
+                "母公司": "测试客户A",
+                "媒介": "Google",
+                "服务类型": "代投",
+                "代投消耗": 100,
+                "流水消耗": 0,
+                "Coupon": 0,
+            },
+            {
+                "母公司": "测试客户A",
+                "媒介": "Facebook",
+                "服务类型": "代投",
+                "代投消耗": 300,
+                "流水消耗": 0,
+                "Coupon": 0,
+            },
+        ]
+    )
+    with pd.ExcelWriter(src) as writer:
+        df.to_excel(writer, sheet_name="USD", index=False)
+
+    monkeypatch.setattr("billing.fee_engine.load_contract_terms", lambda _p: {"测试客户A": "各1000+消耗*7%"})
+
+    calculate_service_fees(
+        str(src),
+        contract_path="dummy.xlsx",
+        output_path=str(out),
+        use_db=False,
+        exchange_context=_exchange_context(),
+    )
+
+    result = pd.read_excel(out)
+    fixed_map = result.set_index("媒介")["固定服务费"].fillna(0).astype(float).to_dict()
+    assert pytest.approx(fixed_map["Google"], rel=1e-4) == 500.0
+    assert pytest.approx(fixed_map["Facebook"], rel=1e-4) == 1500.0
+    assert pytest.approx(result["固定服务费"].fillna(0).sum(), rel=1e-4) == 2000.0
+
+
+def test_fixed_fee_not_charged_when_customer_has_no_managed_consumption(tmp_path, monkeypatch):
+    src = tmp_path / "consumption.xlsx"
+    out = tmp_path / "out.xlsx"
+
+    df = pd.DataFrame(
+        [
+            {
+                "母公司": "测试客户A",
+                "媒介": "Google",
+                "服务类型": "代投",
+                "代投消耗": 0,
+                "流水消耗": 0,
+                "Coupon": 0,
+            },
+            {
+                "母公司": "测试客户A",
+                "媒介": "Google",
+                "服务类型": "流水",
+                "代投消耗": 0,
+                "流水消耗": 500,
+                "Coupon": 0,
+            },
+        ]
+    )
+    with pd.ExcelWriter(src) as writer:
+        df.to_excel(writer, sheet_name="USD", index=False)
+
+    monkeypatch.setattr("billing.fee_engine.load_contract_terms", lambda _p: {"测试客户A": "各1000+消耗*7%"})
+
+    calculate_service_fees(
+        str(src),
+        contract_path="dummy.xlsx",
+        output_path=str(out),
+        use_db=False,
+        exchange_context=_exchange_context(),
+    )
+
+    result = pd.read_excel(out)
+    assert pytest.approx(result["固定服务费"].fillna(0).sum(), rel=1e-4) == 0.0
+
+
+def test_fixed_fee_ratio_allocation_keeps_customer_total_after_rounding(tmp_path, monkeypatch):
+    src = tmp_path / "consumption.xlsx"
+    out = tmp_path / "out.xlsx"
+
+    df = pd.DataFrame(
+        [
+            {
+                "母公司": "测试客户A",
+                "媒介": "Google",
+                "服务类型": "代投",
+                "代投消耗": 1,
+                "流水消耗": 0,
+                "Coupon": 0,
+            },
+            {
+                "母公司": "测试客户A",
+                "媒介": "Facebook",
+                "服务类型": "代投",
+                "代投消耗": 1,
+                "流水消耗": 0,
+                "Coupon": 0,
+            },
+            {
+                "母公司": "测试客户A",
+                "媒介": "TikTok",
+                "服务类型": "代投",
+                "代投消耗": 1,
+                "流水消耗": 0,
+                "Coupon": 0,
+            },
+        ]
+    )
+    with pd.ExcelWriter(src) as writer:
+        df.to_excel(writer, sheet_name="USD", index=False)
+
+    monkeypatch.setattr("billing.fee_engine.load_contract_terms", lambda _p: {"测试客户A": "合计基础1000+消耗*7%"})
+
+    calculate_service_fees(
+        str(src),
+        contract_path="dummy.xlsx",
+        output_path=str(out),
+        use_db=False,
+        exchange_context=_exchange_context(),
+    )
+
+    result = pd.read_excel(out)
+    fixed_values = sorted([float(v or 0) for v in result["固定服务费"].fillna(0).tolist()], reverse=True)
+    assert fixed_values[0] == 333.34
+    assert fixed_values[1] == 333.33
+    assert fixed_values[2] == 333.33
+    assert pytest.approx(sum(fixed_values), rel=1e-4) == 1000.0
+
+
+def test_service_type_variant_liushui_plus_daitou_is_normalized(tmp_path, monkeypatch):
+    src = tmp_path / "consumption.xlsx"
+    out = tmp_path / "out.xlsx"
+
+    df = pd.DataFrame(
+        [
+            {
+                "母公司": "测试客户A",
+                "媒介": "Google",
+                "服务类型": "流水+代投",
+                "代投消耗": 100,
+                "流水消耗": 50,
+                "Coupon": 0,
+            },
+        ]
+    )
+    with pd.ExcelWriter(src) as writer:
+        df.to_excel(writer, sheet_name="USD", index=False)
+
+    monkeypatch.setattr("billing.fee_engine.load_contract_terms", lambda _p: {"测试客户A": "Google 10%"})
+
+    calculate_service_fees(
+        str(src),
+        contract_path="dummy.xlsx",
+        output_path=str(out),
+        use_db=False,
+        calculation_date="2026年1月",
+        exchange_context=_exchange_context(),
+    )
+
+    result = pd.read_excel(out)
+    # 代投100*10% + 流水50*10% = 15
+    assert pytest.approx(float(result["服务费"].fillna(0).iloc[0]), rel=1e-4) == 15.0
