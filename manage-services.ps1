@@ -148,14 +148,18 @@ function Stop-PidTree {
     } else {
         Write-Info "Stopping PID $ProcessId"
     }
-    cmd /c "taskkill /PID $ProcessId /T /F" *> $null
+    try {
+        cmd /c "taskkill /PID $ProcessId /T /F" *> $null
+    } catch {
+        Write-Warn "Failed to stop PID ${ProcessId}: $($_.Exception.Message)"
+    }
 }
 
 function Stop-PortListeners {
     param([int]$Port)
     $pids = Get-ListenerPids -Port $Port
-    foreach ($pid in $pids) {
-        Stop-PidTree -ProcessId ([int]$pid) -Reason "port $Port"
+    foreach ($listenerPid in $pids) {
+        Stop-PidTree -ProcessId ([int]$listenerPid) -Reason "port $Port"
     }
 }
 
@@ -313,8 +317,16 @@ function Stop-DevFrontend {
         [int]$DevPort
     )
     $state = Load-State -StateFile $StateFile
+    $listenerPids = @(Get-ListenerPids -Port $DevPort)
     if ($state -and [int]$state.dev_pid -gt 0) {
-        Stop-PidTree -ProcessId ([int]$state.dev_pid) -Reason "dev state"
+        $trackedPid = [int]$state.dev_pid
+        if ($listenerPids -contains $trackedPid) {
+            Stop-PidTree -ProcessId $trackedPid -Reason "dev state"
+        } elseif ($listenerPids.Count -eq 0) {
+            Write-Info "Skipping tracked PID $trackedPid because port $DevPort is free; clearing stale state."
+        } else {
+            Write-Info "Tracked PID $trackedPid is not listening on port $DevPort; stopping active listeners instead."
+        }
     }
     Stop-PortListeners -Port $DevPort
     Clear-State -StateFile $StateFile
