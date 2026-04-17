@@ -124,11 +124,26 @@ class CalculationService:
         upload_dir.mkdir(exist_ok=True)
         return upload_dir
 
-    def _get_latest_consumption_meta_path(self) -> Path:
-        return self._get_upload_dir() / ".latest_consumption.json"
+    def _normalize_owner_key(self, owner_username: str | None) -> str:
+        normalized = secure_filename(str(owner_username or "").strip().lower())
+        if not normalized or normalized == "uploaded_file":
+            return "system"
+        return normalized
 
-    def _get_latest_estimate_consumption_meta_path(self) -> Path:
-        return self._get_upload_dir() / ".latest_estimate_consumption.json"
+    def _build_upload_storage_filename(self, owner_username: str | None, original_filename: str) -> str:
+        owner_key = self._normalize_owner_key(owner_username)
+        timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S%f")
+        unique = uuid.uuid4().hex[:8]
+        safe_original = secure_filename(original_filename)
+        return f"{owner_key}_{timestamp}_{unique}_{safe_original}"
+
+    def _get_latest_consumption_meta_path(self, owner_username: str) -> Path:
+        owner_key = self._normalize_owner_key(owner_username)
+        return self._get_upload_dir() / f".latest_consumption_{owner_key}.json"
+
+    def _get_latest_estimate_consumption_meta_path(self, owner_username: str) -> Path:
+        owner_key = self._normalize_owner_key(owner_username)
+        return self._get_upload_dir() / f".latest_estimate_consumption_{owner_key}.json"
 
     def _get_result_registry_path(self) -> Path:
         return self._get_upload_dir() / ".result_registry.json"
@@ -773,27 +788,51 @@ class CalculationService:
         file_path: str,
         original_filename: str | None,
         *,
+        owner_username: str,
         estimate: bool = False,
     ) -> None:
         meta_path = (
-            self._get_latest_estimate_consumption_meta_path()
+            self._get_latest_estimate_consumption_meta_path(owner_username)
             if estimate
-            else self._get_latest_consumption_meta_path()
+            else self._get_latest_consumption_meta_path(owner_username)
         )
         payload = {
             "file_path": str(Path(file_path).resolve()),
             "original_filename": original_filename or Path(file_path).name,
+            "owner": self._normalize_owner_key(owner_username),
         }
         try:
             meta_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         except Exception:
             logger.warning("保存最近消耗文件元数据失败", exc_info=True)
 
-    def _record_latest_consumption(self, file_path: str, original_filename: str | None):
-        self._record_latest_uploaded_file(file_path, original_filename, estimate=False)
+    def _record_latest_consumption(
+        self,
+        file_path: str,
+        original_filename: str | None,
+        *,
+        owner_username: str,
+    ):
+        self._record_latest_uploaded_file(
+            file_path,
+            original_filename,
+            owner_username=owner_username,
+            estimate=False,
+        )
 
-    def _record_latest_estimate_consumption(self, file_path: str, original_filename: str | None):
-        self._record_latest_uploaded_file(file_path, original_filename, estimate=True)
+    def _record_latest_estimate_consumption(
+        self,
+        file_path: str,
+        original_filename: str | None,
+        *,
+        owner_username: str,
+    ):
+        self._record_latest_uploaded_file(
+            file_path,
+            original_filename,
+            owner_username=owner_username,
+            estimate=True,
+        )
 
     def _cleanup_failed_upload(self, file_path: Path) -> None:
         if not file_path.exists():
@@ -851,12 +890,14 @@ class CalculationService:
     def _get_latest_uploaded_file(
         self,
         *,
+        owner_username: str,
         estimate: bool,
     ) -> tuple[str, str]:
+        owner_key = self._normalize_owner_key(owner_username)
         meta_path = (
-            self._get_latest_estimate_consumption_meta_path()
+            self._get_latest_estimate_consumption_meta_path(owner_username)
             if estimate
-            else self._get_latest_consumption_meta_path()
+            else self._get_latest_consumption_meta_path(owner_username)
         )
         looks_like = self._looks_like_estimate_consumption_file if estimate else self._looks_like_consumption_file
         not_found_message = (
@@ -869,7 +910,13 @@ class CalculationService:
                 payload = json.loads(meta_path.read_text(encoding="utf-8"))
                 candidate = Path(str(payload.get("file_path", "")).strip())
                 original = str(payload.get("original_filename") or candidate.name)
-                if candidate.exists() and candidate.is_file() and looks_like(candidate):
+                payload_owner = self._normalize_owner_key(payload.get("owner"))
+                if (
+                    payload_owner == owner_key
+                    and candidate.exists()
+                    and candidate.is_file()
+                    and looks_like(candidate)
+                ):
                     return str(candidate), original
             except Exception:
                 logger.warning("读取最近上传文件元数据失败，改用目录扫描", exc_info=True)
@@ -883,6 +930,7 @@ class CalculationService:
                 and p.suffix.lower() in {".xlsx", ".xls"}
                 and not p.name.startswith("~$")
                 and "_results" not in p.stem.lower()
+                and p.name.startswith(f"{owner_key}_")
             ],
             key=lambda p: p.stat().st_mtime,
             reverse=True,
@@ -894,16 +942,16 @@ class CalculationService:
 
         raise HTTPException(status_code=404, detail=not_found_message)
 
-    def get_latest_consumption_file(self) -> tuple[str, str]:
+    def get_latest_consumption_file(self, owner_username: str = "system") -> tuple[str, str]:
         """Get latest uploaded consumption file path and original filename."""
-        return self._get_latest_uploaded_file(estimate=False)
+        return self._get_latest_uploaded_file(owner_username=owner_username, estimate=False)
 
-    def get_latest_estimate_consumption_file(self) -> tuple[str, str]:
-        return self._get_latest_uploaded_file(estimate=True)
+    def get_latest_estimate_consumption_file(self, owner_username: str = "system") -> tuple[str, str]:
+        return self._get_latest_uploaded_file(owner_username=owner_username, estimate=True)
 
     def recalculate_latest(self, owner_username: str = "system"):
         """Re-run calculation with latest uploaded consumption file."""
-        file_path, original_filename = self.get_latest_consumption_file()
+        file_path, original_filename = self.get_latest_consumption_file(owner_username=owner_username)
         result = self.process_local_file(
             file_path,
             original_filename,
@@ -914,7 +962,7 @@ class CalculationService:
         return result
 
     def recalculate_latest_estimate(self, owner_username: str = "system"):
-        file_path, original_filename = self.get_latest_estimate_consumption_file()
+        file_path, original_filename = self.get_latest_estimate_consumption_file(owner_username=owner_username)
         result = self.process_estimate_local_file(
             file_path,
             original_filename,
@@ -929,13 +977,18 @@ class CalculationService:
         upload_dir = self._get_upload_dir()
         safe_filename = secure_filename(file.filename)
         self._validate_excel_extension(safe_filename, context="消耗上传文件")
-        file_path = upload_dir / safe_filename
+        stored_filename = self._build_upload_storage_filename(owner_username, safe_filename)
+        file_path = upload_dir / stored_filename
 
         try:
             with open(file_path, "wb") as f:
                 shutil.copyfileobj(file.file, f)
             self._validate_consumption_workbook(str(file_path), file.filename or safe_filename)
-            self._record_latest_consumption(str(file_path), file.filename)
+            self._record_latest_consumption(
+                str(file_path),
+                file.filename,
+                owner_username=owner_username,
+            )
             self._audit(
                 action="upload_consumption",
                 actor=owner_username,
@@ -968,13 +1021,18 @@ class CalculationService:
         upload_dir = self._get_upload_dir()
         safe_filename = secure_filename(file.filename)
         self._validate_excel_extension(safe_filename, context="预估模板上传文件")
-        file_path = upload_dir / safe_filename
+        stored_filename = self._build_upload_storage_filename(owner_username, safe_filename)
+        file_path = upload_dir / stored_filename
 
         try:
             with open(file_path, "wb") as f:
                 shutil.copyfileobj(file.file, f)
             self._validate_estimate_workbook(str(file_path))
-            self._record_latest_estimate_consumption(str(file_path), file.filename)
+            self._record_latest_estimate_consumption(
+                str(file_path),
+                file.filename,
+                owner_username=owner_username,
+            )
             self._audit(
                 action="upload_estimate_consumption",
                 actor=owner_username,

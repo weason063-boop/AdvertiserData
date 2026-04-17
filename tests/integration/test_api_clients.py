@@ -1,7 +1,5 @@
 import json
 
-import pytest
-
 from api.auth import get_current_user, get_current_user_info
 from api.main import app
 from api.models import Client, ClientContractChangeReview
@@ -111,8 +109,25 @@ def test_create_client(client, db_session):
     _clear_auth_override()
 
 
-def test_sync_feishu_trigger(client):
-    pytest.skip("External integration test is intentionally skipped in unit CI.")
+def test_sync_feishu_trigger(client, monkeypatch):
+    _override_auth(FULL_PERMISSION_USER)
+
+    from api.services.feishu_service import FeishuService
+
+    called = {"count": 0}
+
+    def fake_sync_contracts(self):
+        called["count"] += 1
+        return {"status": "ok", "count": 0}
+
+    monkeypatch.setattr(FeishuService, "sync_contracts", fake_sync_contracts)
+
+    response = client.post("/api/clients/sync-feishu")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    assert called["count"] == 1
+    _clear_auth_override()
 
 
 def test_get_contract_change_reviews_returns_pending_only(client, db_session):

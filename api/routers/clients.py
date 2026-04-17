@@ -109,7 +109,7 @@ def ignore_contract_change_review(
     return {"status": "ok"}
 
 
-@router.get("/{client_id}")
+@router.get("/{client_id:int}")
 def get_client_detail(client_id: int, db: Session = Depends(get_db), current_user: str = Depends(get_current_user)):
     client = service.get_client_detail(client_id, db)
     if not client:
@@ -125,7 +125,7 @@ def sync_feishu_contracts(current_user: dict = Depends(require_permission(PERMIS
     return feishu_service.sync_contracts()
 
 
-@router.put("/{client_id}")
+@router.put("/{client_id:int}")
 def update_client_clause(
     client_id: int,
     request: UpdateClauseRequest,

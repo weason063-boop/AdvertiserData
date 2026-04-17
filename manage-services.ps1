@@ -220,6 +220,18 @@ function Resolve-NssmPath {
     return $null
 }
 
+function Get-ServiceAppDirectoryFromRegistry {
+    param([string]$Name)
+    $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\$Name\Parameters"
+    try {
+        $item = Get-ItemProperty -Path $regPath -ErrorAction Stop
+        if ($item.AppDirectory -and ($item.AppDirectory -is [string])) {
+            return $item.AppDirectory.Trim()
+        }
+    } catch {}
+    return $null
+}
+
 function Resolve-ServicePythonPath {
     param(
         [string]$NssmPath,
@@ -334,6 +346,40 @@ function Ensure-ProdFrontendService {
     & $NssmPath set billing-frontend Start SERVICE_AUTO_START | Out-Null
 }
 
+function Ensure-BackendService {
+    param(
+        [string]$ProjectDir,
+        [string]$ServiceProjectDir,
+        [string]$ServiceLogDir,
+        [int]$BackendPort
+    )
+    Assert-Admin
+    Ensure-Directory -Path $ServiceLogDir
+
+    $nssm = Resolve-NssmPath -ProjectDir $ProjectDir
+    if (-not $nssm) {
+        throw "nssm.exe was not found."
+    }
+
+    $python = Resolve-ServicePythonPath -NssmPath $nssm -ProjectDir $ProjectDir -ServiceProjectDir $ServiceProjectDir
+    if (-not $python) {
+        throw "Python for backend service was not found."
+    }
+
+    $params = "-m uvicorn api.main:app --host 0.0.0.0 --port $BackendPort"
+    if (-not (Service-Exists -Name "billing-backend")) {
+        Write-Info "Creating service billing-backend"
+        & $nssm install billing-backend $python $params | Out-Null
+    }
+
+    & $nssm set billing-backend Application $python | Out-Null
+    & $nssm set billing-backend AppParameters $params | Out-Null
+    & $nssm set billing-backend AppDirectory $ServiceProjectDir | Out-Null
+    & $nssm set billing-backend AppStdout (Join-Path $ServiceLogDir "backend.log") | Out-Null
+    & $nssm set billing-backend AppStderr (Join-Path $ServiceLogDir "backend.err.log") | Out-Null
+    & $nssm set billing-backend Start SERVICE_AUTO_START | Out-Null
+}
+
 function Restart-ProdFrontendService {
     param(
         [string]$NssmPath,
@@ -371,11 +417,14 @@ function Build-Frontend {
 }
 
 function Start-BackendService {
-    param([int]$BackendPort)
+    param(
+        [int]$BackendPort,
+        [string]$ProjectDir,
+        [string]$ServiceProjectDir,
+        [string]$ServiceLogDir
+    )
     Assert-Admin
-    if (-not (Service-Exists -Name "billing-backend")) {
-        throw "Service billing-backend does not exist."
-    }
+    Ensure-BackendService -ProjectDir $ProjectDir -ServiceProjectDir $ServiceProjectDir -ServiceLogDir $ServiceLogDir -BackendPort $BackendPort
     if ((Get-ServiceStatusText -Name "billing-backend") -ne "Running") {
         sc.exe start billing-backend | Out-Null
     }
@@ -386,11 +435,14 @@ function Start-BackendService {
 }
 
 function Restart-BackendService {
-    param([int]$BackendPort)
+    param(
+        [int]$BackendPort,
+        [string]$ProjectDir,
+        [string]$ServiceProjectDir,
+        [string]$ServiceLogDir
+    )
     Assert-Admin
-    if (-not (Service-Exists -Name "billing-backend")) {
-        throw "Service billing-backend does not exist."
-    }
+    Ensure-BackendService -ProjectDir $ProjectDir -ServiceProjectDir $ServiceProjectDir -ServiceLogDir $ServiceLogDir -BackendPort $BackendPort
     sc.exe stop billing-backend | Out-Null
     Start-Sleep -Seconds 1
     sc.exe start billing-backend | Out-Null
@@ -436,10 +488,14 @@ function Show-Status {
     $backendPids = Get-ListenerPids -Port $BackendPort
     $prodPids = Get-ListenerPids -Port $ProdPort
     $devPids = Get-ListenerPids -Port $DevPort
+    $backendDir = Get-ServiceAppDirectoryFromRegistry -Name "billing-backend"
+    $frontendDir = Get-ServiceAppDirectoryFromRegistry -Name "billing-frontend"
 
     Write-Host "============ Status ============"
     Write-Host "backend service : $(Get-ServiceStatusText -Name 'billing-backend')"
     Write-Host "frontend service: $(Get-ServiceStatusText -Name 'billing-frontend')"
+    Write-Host "backend dir      : $(if ($backendDir) { $backendDir } else { '(unknown)' })"
+    Write-Host "frontend dir     : $(if ($frontendDir) { $frontendDir } else { '(unknown)' })"
     Write-Host "backend port $BackendPort : $(if ($backendPids.Count -gt 0) { $backendPids -join ', ' } else { 'free' })"
     Write-Host "prod port $ProdPort    : $(if ($prodPids.Count -gt 0) { $prodPids -join ', ' } else { 'free' })"
     Write-Host "dev  port $DevPort     : $(if ($devPids.Count -gt 0) { $devPids -join ', ' } else { 'free' })"
@@ -488,7 +544,10 @@ $ProjectDir = (Resolve-Path -LiteralPath $PSScriptRoot).Path
 $WebDir = Join-Path $ProjectDir "web"
 $LogDir = Join-Path $ProjectDir "logs"
 $StateFile = Join-Path $LogDir "manage-services.state.json"
-$ServiceProjectDir = if (Test-Path -LiteralPath "C:\AGM_BILLING") { "C:\AGM_BILLING" } else { $ProjectDir }
+$ServiceProjectDir = $ProjectDir
+if ($env:BILLING_SERVICE_PROJECT_DIR -and (Test-Path -LiteralPath $env:BILLING_SERVICE_PROJECT_DIR)) {
+    $ServiceProjectDir = (Resolve-Path -LiteralPath $env:BILLING_SERVICE_PROJECT_DIR).Path
+}
 $ServiceLogDir = Join-Path $ServiceProjectDir "logs"
 
 Ensure-Directory -Path $LogDir
@@ -522,6 +581,9 @@ try {
             Assert-Admin
             $nssm = Resolve-NssmPath -ProjectDir $ProjectDir
             if (-not $nssm) { throw "nssm.exe was not found." }
+            $python = Resolve-ServicePythonPath -NssmPath $nssm -ProjectDir $ProjectDir -ServiceProjectDir $ServiceProjectDir
+            if (-not $python) { throw "Python for service was not found." }
+            Ensure-ProdFrontendService -NssmPath $nssm -PythonPath $python -ServiceProjectDir $ServiceProjectDir -ServiceLogDir $ServiceLogDir -ProdPort $ProdPort
             if ((Get-ServiceStatusText -Name "billing-frontend") -ne "Running") {
                 & $nssm start billing-frontend | Out-Null
             }
@@ -543,15 +605,18 @@ try {
             Assert-Admin
             $nssm = Resolve-NssmPath -ProjectDir $ProjectDir
             if (-not $nssm) { throw "nssm.exe was not found." }
+            $python = Resolve-ServicePythonPath -NssmPath $nssm -ProjectDir $ProjectDir -ServiceProjectDir $ServiceProjectDir
+            if (-not $python) { throw "Python for service was not found." }
+            Ensure-ProdFrontendService -NssmPath $nssm -PythonPath $python -ServiceProjectDir $ServiceProjectDir -ServiceLogDir $ServiceLogDir -ProdPort $ProdPort
             Restart-ProdFrontendService -NssmPath $nssm -ProdPort $ProdPort
             exit 0
         }
         "backend-start" {
-            Start-BackendService -BackendPort $BackendPort
+            Start-BackendService -BackendPort $BackendPort -ProjectDir $ProjectDir -ServiceProjectDir $ServiceProjectDir -ServiceLogDir $ServiceLogDir
             exit 0
         }
         "backend-restart" {
-            Restart-BackendService -BackendPort $BackendPort
+            Restart-BackendService -BackendPort $BackendPort -ProjectDir $ProjectDir -ServiceProjectDir $ServiceProjectDir -ServiceLogDir $ServiceLogDir
             exit 0
         }
         "logs" {
@@ -571,6 +636,9 @@ try {
                         Assert-Admin
                         $nssm = Resolve-NssmPath -ProjectDir $ProjectDir
                         if (-not $nssm) { throw "nssm.exe was not found." }
+                        $python = Resolve-ServicePythonPath -NssmPath $nssm -ProjectDir $ProjectDir -ServiceProjectDir $ServiceProjectDir
+                        if (-not $python) { throw "Python for service was not found." }
+                        Ensure-ProdFrontendService -NssmPath $nssm -PythonPath $python -ServiceProjectDir $ServiceProjectDir -ServiceLogDir $ServiceLogDir -ProdPort $ProdPort
                         & $nssm start billing-frontend | Out-Null
                         Write-Ok "Prod frontend start command sent."
                         Pause
@@ -579,10 +647,13 @@ try {
                         Assert-Admin
                         $nssm = Resolve-NssmPath -ProjectDir $ProjectDir
                         if (-not $nssm) { throw "nssm.exe was not found." }
+                        $python = Resolve-ServicePythonPath -NssmPath $nssm -ProjectDir $ProjectDir -ServiceProjectDir $ServiceProjectDir
+                        if (-not $python) { throw "Python for service was not found." }
+                        Ensure-ProdFrontendService -NssmPath $nssm -PythonPath $python -ServiceProjectDir $ServiceProjectDir -ServiceLogDir $ServiceLogDir -ProdPort $ProdPort
                         Restart-ProdFrontendService -NssmPath $nssm -ProdPort $ProdPort
                         Pause
                     }
-                    "7" { Restart-BackendService -BackendPort $BackendPort; Pause }
+                    "7" { Restart-BackendService -BackendPort $BackendPort -ProjectDir $ProjectDir -ServiceProjectDir $ServiceProjectDir -ServiceLogDir $ServiceLogDir; Pause }
                     "8" { Show-Logs -ServiceLogDir $ServiceLogDir; Pause }
                     "Q" { break }
                     default { Write-Warn "Invalid input: $choice"; Start-Sleep -Milliseconds 500 }

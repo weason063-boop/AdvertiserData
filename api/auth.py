@@ -109,7 +109,13 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
 
 
 async def get_current_user(token: str = Depends(oauth2_scheme)):
-    return _decode_username_from_token(token)
+    username = _decode_username_from_token(token)
+    db: Session = SessionLocal()
+    try:
+        user = _get_user_or_401(db, username)
+        return user.username
+    finally:
+        db.close()
 
 
 def _decode_username_from_token(token: str) -> str:
@@ -128,17 +134,22 @@ def _decode_username_from_token(token: str) -> str:
     return username
 
 
+def _get_user_or_401(db: Session, username: str) -> User:
+    user = db.query(User).filter(User.username == username).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return user
+
+
 async def get_current_user_info(token: str = Depends(oauth2_scheme)) -> Dict[str, Any]:
     username = _decode_username_from_token(token)
     db: Session = SessionLocal()
     try:
-        user = db.query(User).filter(User.username == username).first()
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="User not found",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
+        user = _get_user_or_401(db, username)
         return {
             "id": user.id,
             "username": user.username,

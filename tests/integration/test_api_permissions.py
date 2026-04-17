@@ -1,5 +1,6 @@
-from api.auth import get_current_user_info
+from api.auth import create_access_token, get_current_user_info
 from api.main import app
+from api.models import User
 
 
 SUPER_ADMIN = {
@@ -93,3 +94,27 @@ def test_download_rejects_non_result_filename(client):
     response = client.get("/api/download/.env")
     assert response.status_code == 400
     _clear_overrides()
+
+
+def test_deleted_user_token_cannot_access_authenticated_read_api(client, db_session):
+    user = User(
+        username="deleted_user",
+        password_hash="not_used_in_this_test",
+        role="user",
+        permissions="[]",
+    )
+    db_session.add(user)
+    db_session.commit()
+
+    token = create_access_token({"sub": "deleted_user"})
+
+    db_session.delete(user)
+    db_session.commit()
+
+    response = client.get(
+        "/api/clients",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 401
+    assert response.json().get("detail") == "User not found"
