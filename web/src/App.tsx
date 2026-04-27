@@ -91,6 +91,21 @@ const extractMonthFromResultData = (result: CalculationResult | null): string | 
   return [...monthSet].sort().at(-1) ?? null
 }
 
+interface LatestResultInfo {
+  has_result?: boolean
+  filename?: string
+  output_file?: string
+  source_file?: string
+  data_url?: string
+  download_url?: string
+}
+
+const extractMonthFromResultInfo = (info: LatestResultInfo): string | null => (
+  normalizeMonthText(info.source_file)
+  ?? normalizeMonthText(info.filename)
+  ?? normalizeMonthText(info.output_file)
+)
+
 const isTab = (value: string | null): value is Tab =>
   value === 'dashboard' ||
   value === 'clientLedger' ||
@@ -136,14 +151,17 @@ function App() {
 
   const [results, setResults] = useState<CalculationResult | null>(null)
   const [resultFile, setResultFile] = useState('')
-  const [, setResultDataUrl] = useState('')
+  const [resultDataUrl, setResultDataUrl] = useState('')
   const [resultDownloadUrl, setResultDownloadUrl] = useState('')
+  const [resultMetaLoaded, setResultMetaLoaded] = useState(false)
+  const [latestResultMetaMonth, setLatestResultMetaMonth] = useState<string | null>(null)
   const [resultsPage, setResultsPage] = useState(1)
   const [resultsPageSize, setResultsPageSize] = useState(100)
   const [estimateResults, setEstimateResults] = useState<CalculationResult | null>(null)
   const [estimateResultFile, setEstimateResultFile] = useState('')
-  const [, setEstimateResultDataUrl] = useState('')
+  const [estimateResultDataUrl, setEstimateResultDataUrl] = useState('')
   const [estimateResultDownloadUrl, setEstimateResultDownloadUrl] = useState('')
+  const [estimateResultMetaLoaded, setEstimateResultMetaLoaded] = useState(false)
   const [estimateResultsPage, setEstimateResultsPage] = useState(1)
   const [estimateResultsPageSize, setEstimateResultsPageSize] = useState(100)
 
@@ -161,8 +179,8 @@ function App() {
   const [syncResult, setSyncResult] = useState<SyncResult | null>(null)
   const [contractChangeReviews, setContractChangeReviews] = useState<ContractChangeReview[]>([])
   const latestBillingResultMonth = useMemo(
-    () => extractMonthFromResultData(results),
-    [results],
+    () => extractMonthFromResultData(results) ?? latestResultMetaMonth,
+    [latestResultMetaMonth, results],
   )
 
   // Auth State
@@ -298,10 +316,13 @@ function App() {
     setResultFile('')
     setResultDataUrl('')
     setResultDownloadUrl('')
+    setResultMetaLoaded(false)
+    setLatestResultMetaMonth(null)
     setEstimateResults(null)
     setEstimateResultFile('')
     setEstimateResultDataUrl('')
     setEstimateResultDownloadUrl('')
+    setEstimateResultMetaLoaded(false)
     taskHistory.reset()
     setDashboardData({ stats: null, trend: [] })
     setIsDashboardStale(false)
@@ -416,15 +437,10 @@ function App() {
       console.error('Failed to load dashboard', error)
     }
   }
-  const loadLatestResult = async () => {
+  const loadLatestResult = async ({ includeData = false }: { includeData?: boolean } = {}) => {
     try {
-      const { data } = await apiJson<{
-        has_result?: boolean
-        filename?: string
-        output_file?: string
-        data_url?: string
-        download_url?: string
-      }>('/api/latest-result')
+      const { data } = await apiJson<LatestResultInfo>('/api/latest-result')
+      setResultMetaLoaded(true)
       if (data.has_result) {
         const latestFilename = String(data.filename || data.output_file || '')
         const latestDataUrl = String(data.data_url || '')
@@ -432,6 +448,11 @@ function App() {
         setResultFile(latestFilename)
         setResultDataUrl(latestDataUrl)
         setResultDownloadUrl(latestDownloadUrl)
+        setLatestResultMetaMonth(extractMonthFromResultInfo(data))
+        if (!includeData) {
+          setResults(null)
+          return
+        }
         if (!latestDataUrl) {
           throw new Error('结果地址缺失')
         }
@@ -442,6 +463,7 @@ function App() {
         setResultFile('')
         setResultDataUrl('')
         setResultDownloadUrl('')
+        setLatestResultMetaMonth(null)
       }
     } catch (error: unknown) {
       if (isApiHttpError(error) && error.status === 401) {
@@ -453,20 +475,17 @@ function App() {
         setResultFile('')
         setResultDataUrl('')
         setResultDownloadUrl('')
+        setResultMetaLoaded(true)
+        setLatestResultMetaMonth(null)
         return
       }
       console.error('Failed to load latest result', error)
     }
   }
-  const loadLatestEstimateResult = async () => {
+  const loadLatestEstimateResult = async ({ includeData = false }: { includeData?: boolean } = {}) => {
     try {
-      const { data } = await apiJson<{
-        has_result?: boolean
-        filename?: string
-        output_file?: string
-        data_url?: string
-        download_url?: string
-      }>('/api/estimate/latest-result')
+      const { data } = await apiJson<LatestResultInfo>('/api/estimate/latest-result')
+      setEstimateResultMetaLoaded(true)
       if (data.has_result) {
         const latestFilename = String(data.filename || data.output_file || '')
         const latestDataUrl = String(data.data_url || '')
@@ -474,6 +493,10 @@ function App() {
         setEstimateResultFile(latestFilename)
         setEstimateResultDataUrl(latestDataUrl)
         setEstimateResultDownloadUrl(latestDownloadUrl)
+        if (!includeData) {
+          setEstimateResults(null)
+          return
+        }
         if (!latestDataUrl) {
           throw new Error('预估结果地址缺失')
         }
@@ -496,6 +519,7 @@ function App() {
         setEstimateResultFile('')
         setEstimateResultDataUrl('')
         setEstimateResultDownloadUrl('')
+        setEstimateResultMetaLoaded(true)
         return
       }
       console.error('Failed to load latest estimate result', error)
@@ -517,6 +541,18 @@ function App() {
   }, [isAuthenticated])
 
   useEffect(() => {
+    if (!isAuthenticated || activeTab !== 'results' || results || !resultMetaLoaded || !resultDataUrl) return
+    void loadLatestResult({ includeData: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- result data is loaded lazily when the results tab becomes active
+  }, [activeTab, isAuthenticated, resultDataUrl, resultMetaLoaded, results])
+
+  useEffect(() => {
+    if (!isAuthenticated || activeTab !== 'estimateResults' || estimateResults || !estimateResultMetaLoaded || !estimateResultDataUrl) return
+    void loadLatestEstimateResult({ includeData: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- estimate data is loaded lazily when the estimate tab becomes active
+  }, [activeTab, estimateResultDataUrl, estimateResultMetaLoaded, estimateResults, isAuthenticated])
+
+  useEffect(() => {
     if (!isAuthenticated || activeTab !== 'clients') return
     const timer = window.setTimeout(() => {
       void loadClients(search)
@@ -534,10 +570,10 @@ function App() {
     if (!isAuthenticated) return
     if (activeTab !== 'taskHistory') return
     if (isAdminRole(currentRole)) return
-    setActiveTab(results ? 'results' : 'dashboard')
+    setActiveTab(resultFile ? 'results' : 'dashboard')
     setToastMessage('任务历史仅管理员可查看')
     setToastType('error')
-  }, [activeTab, currentRole, isAuthenticated, results])
+  }, [activeTab, currentRole, isAuthenticated, resultFile])
 
   useEffect(() => {
     if (isAuthenticated && activeTab === 'dashboard' && isDashboardStale) {
@@ -709,6 +745,8 @@ function App() {
         setResultFile(nextFile)
         setResultDataUrl(nextDataUrl)
         setResultDownloadUrl(nextDownloadUrl)
+        setResultMetaLoaded(true)
+        setLatestResultMetaMonth(extractMonthFromResultInfo(result))
         setResultsPage(1)
 
         const { data: resultData } = await apiJson<CalculationResult>(nextDataUrl)
@@ -772,6 +810,7 @@ function App() {
         setEstimateResultFile(nextFile)
         setEstimateResultDataUrl(nextDataUrl)
         setEstimateResultDownloadUrl(nextDownloadUrl)
+        setEstimateResultMetaLoaded(true)
         setEstimateResultsPage(1)
 
         const { data: resultData } = await apiJson<CalculationResult>(nextDataUrl)
@@ -1057,6 +1096,8 @@ function App() {
         setResultFile(nextFile)
         setResultDataUrl(nextDataUrl)
         setResultDownloadUrl(nextDownloadUrl)
+        setResultMetaLoaded(true)
+        setLatestResultMetaMonth(extractMonthFromResultInfo(result))
         setResultsPage(1)
 
         const { data: resultData } = await apiJson<CalculationResult>(nextDataUrl)
@@ -1110,6 +1151,7 @@ function App() {
         setEstimateResultFile(nextFile)
         setEstimateResultDataUrl(nextDataUrl)
         setEstimateResultDownloadUrl(nextDownloadUrl)
+        setEstimateResultMetaLoaded(true)
         setEstimateResultsPage(1)
 
         const { data: resultData } = await apiJson<CalculationResult>(nextDataUrl)
@@ -1322,8 +1364,8 @@ function App() {
         canBillingRun={canBillingRun}
         loading={loading}
         isAddingClient={isAddingClient}
-        hasResults={Boolean(results)}
-        hasEstimateResults={Boolean(estimateResults)}
+        hasResults={Boolean(resultDownloadUrl || resultFile)}
+        hasEstimateResults={Boolean(estimateResultDownloadUrl || estimateResultFile)}
         onOpenLogin={() => setShowLoginModal(true)}
         onAddClient={() => handleAction(() => setIsAddingClient(true))}
         onSyncFeishu={() => handleAction(handleSyncFeishu)}

@@ -89,6 +89,7 @@ class CalculationService:
     _ESTIMATE_SHEET_NAME = "Sheet1"
     _ESTIMATE_OUTPUT_SHEET_NAME = "Sheet2"
     _RESULT_DATA_SHEET_NAME = "_CALC_DATA"
+    _DASHBOARD_BACKFILL_SIGNATURE_FILE = ".dashboard_backfill_signature.json"
     _NET_CONSUMPTION_COLUMN_CANDIDATES = ("汇总纯花费", "汇总纯消耗", "账单汇总")
     _VISIBLE_CONSUMPTION_COLUMN_CANDIDATES = ("代投消耗", "流水消耗", "账单汇总", "代投/咨询拆分", "流水拆分")
     _CLIENT_ACCOUNT_SHEET_MARKERS = ("客户端口账户代投", "客户端口代投")
@@ -2112,6 +2113,59 @@ class CalculationService:
             )
         return tuple(signature_parts)
 
+    def _get_dashboard_backfill_signature_path(self) -> Path:
+        return self._get_upload_dir() / self._DASHBOARD_BACKFILL_SIGNATURE_FILE
+
+    def _read_dashboard_backfill_signature(self) -> tuple[tuple[str, int, int, str], ...] | None:
+        signature_path = self._get_dashboard_backfill_signature_path()
+        try:
+            payload = json.loads(signature_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return None
+
+        raw_signature = payload.get("signature") if isinstance(payload, dict) else None
+        if not isinstance(raw_signature, list):
+            return None
+
+        signature_parts: list[tuple[str, int, int, str]] = []
+        for item in raw_signature:
+            if not isinstance(item, (list, tuple)) or len(item) != 4:
+                return None
+            try:
+                signature_parts.append((str(item[0]), int(item[1]), int(item[2]), str(item[3])))
+            except (TypeError, ValueError):
+                return None
+        return tuple(signature_parts)
+
+    def _write_dashboard_backfill_signature(self, signature: tuple[tuple[str, int, int, str], ...]) -> None:
+        signature_path = self._get_dashboard_backfill_signature_path()
+        tmp_path = signature_path.with_suffix(f"{signature_path.suffix}.tmp")
+        payload = {
+            "signature": [list(item) for item in signature],
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        try:
+            tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp_path.replace(signature_path)
+        except OSError as exc:
+            logger.warning("Dashboard backfill signature cache write skipped: %s", exc)
+
+    def _dashboard_snapshot_tables_have_data(self, db: Session | None) -> bool:
+        should_close = False
+        snapshot_db = db
+        if snapshot_db is None:
+            snapshot_db = SessionLocal()
+            should_close = True
+        try:
+            return bool(
+                snapshot_db.query(BillingHistory.month).first()
+                and snapshot_db.query(ClientMonthlyStats.id).first()
+                and snapshot_db.query(ClientMonthlyDetailStats.id).first()
+            )
+        finally:
+            if should_close:
+                snapshot_db.close()
+
     def _reset_dashboard_snapshot_tables(self, db: Session) -> None:
         db.query(ClientMonthlyDetailStats).delete(synchronize_session=False)
         db.query(ClientMonthlyStats).delete(synchronize_session=False)
@@ -2130,9 +2184,22 @@ class CalculationService:
         if signature == self._detail_backfill_signature:
             return
 
+        has_existing_snapshot = self._dashboard_snapshot_tables_have_data(db)
+        if has_existing_snapshot:
+            cached_signature = self._read_dashboard_backfill_signature()
+            if signature == cached_signature:
+                self._detail_backfill_signature = signature
+                return
+
         with self._detail_backfill_lock:
             if signature == self._detail_backfill_signature:
                 return
+            has_existing_snapshot = self._dashboard_snapshot_tables_have_data(db)
+            if has_existing_snapshot:
+                cached_signature = self._read_dashboard_backfill_signature()
+                if signature == cached_signature:
+                    self._detail_backfill_signature = signature
+                    return
 
             prepared_batches: list[tuple[str, pd.DataFrame]] = []
             failures: list[tuple[str, Exception]] = []
@@ -2156,18 +2223,27 @@ class CalculationService:
                     failures.append((filename, exc))
 
             if failures:
+                if has_existing_snapshot:
+                    for month_key, current_df in prepared_batches:
+                        self._upsert_monthly_stats(month_key, current_df, db=db)
+                    self._detail_backfill_signature = signature
+                    self._write_dashboard_backfill_signature(signature)
                 for filename, exc in failures:
                     logger.warning("鍘嗗彶璐﹀崟鏄庣粏鍥炲～澶辫触: %s (%s)", filename, exc)
                 logger.warning("鍘嗗彶璐﹀崟鏄庣粏鍥炲～宸蹭繚鐣欐棫蹇収锛屾湰娆℃湭瑕嗙洊鏁版嵁")
                 return
 
             if not prepared_batches:
+                if has_existing_snapshot:
+                    self._detail_backfill_signature = signature
+                    self._write_dashboard_backfill_signature(signature)
                 return
 
             self._reset_dashboard_snapshot_tables(db)
             for month_key, current_df in prepared_batches:
                 self._upsert_monthly_stats(month_key, current_df, db=db)
             self._detail_backfill_signature = signature
+            self._write_dashboard_backfill_signature(signature)
             return
 
             self._reset_dashboard_snapshot_tables(db)
