@@ -27,6 +27,7 @@ class ExchangeRateService:
         source = str(snapshot.get("source") or "hangseng_daily_snapshot")
 
         cny_tt_buy = snapshot.get("cny_tt_buy")
+        eur_tt_buy = snapshot.get("eur_tt_buy")
         usd_tt_sell = snapshot.get("usd_tt_sell")
         jpy_tt_sell = snapshot.get("jpy_tt_sell")
         usd_tt_buy = snapshot.get("usd_tt_buy")
@@ -46,6 +47,16 @@ class ExchangeRateService:
                 "currency": "人民币 (CNY)",
                 "code": "CNY",
                 "tt_buy": str(cny_tt_buy or ""),
+                "tt_sell": "",
+                "notes_buy": "",
+                "notes_sell": "",
+                "pub_time": pub_time,
+                "source": source,
+            },
+            {
+                "currency": "欧元 (EUR)",
+                "code": "EUR",
+                "tt_buy": str(eur_tt_buy or ""),
                 "tt_sell": "",
                 "notes_buy": "",
                 "notes_sell": "",

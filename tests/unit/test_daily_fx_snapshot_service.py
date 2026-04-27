@@ -20,15 +20,18 @@ def test_upsert_snapshot_marks_manual_source(tmp_path, monkeypatch):
     snapshot = service.upsert_snapshot(
         rate_date="2026-03-16",
         cny_tt_buy=1.1,
+        eur_tt_buy=8.9,
         usd_tt_sell=7.2,
         jpy_tt_sell=0.05,
         usd_tt_buy=7.1,
     )
 
     assert snapshot["source"] == "manual"
+    assert snapshot["eur_tt_buy"] == 8.9
 
     payload = service.get_today_snapshot_payload()
     assert payload["has_snapshot"] is True
+    assert payload["snapshot"]["eur_tt_buy"] == 8.9
 
 
 def test_upsert_snapshot_rejects_invalid_date(tmp_path, monkeypatch):
@@ -40,6 +43,7 @@ def test_upsert_snapshot_rejects_invalid_date(tmp_path, monkeypatch):
         service.upsert_snapshot(
             rate_date="not-a-date",
             cny_tt_buy=1.1,
+            eur_tt_buy=8.9,
             usd_tt_sell=7.2,
             jpy_tt_sell=0.05,
             usd_tt_buy=7.1,
@@ -55,6 +59,7 @@ def test_upsert_snapshot_rejects_zero_value(tmp_path, monkeypatch):
         service.upsert_snapshot(
             rate_date="2026-03-16",
             cny_tt_buy=0,
+            eur_tt_buy=8.9,
             usd_tt_sell=7.2,
             jpy_tt_sell=0.05,
             usd_tt_buy=7.1,
@@ -78,13 +83,14 @@ def test_list_snapshots_returns_sorted(tmp_path, monkeypatch):
     service = DailyFxSnapshotService(state_path=state_path)
     monkeypatch.setattr(service, "_now", _fixed_now)
 
-    service.upsert_snapshot(rate_date="2026-03-14", cny_tt_buy=1.1, usd_tt_sell=7.2, jpy_tt_sell=0.05, usd_tt_buy=7.1)
-    service.upsert_snapshot(rate_date="2026-03-16", cny_tt_buy=1.12, usd_tt_sell=7.3, jpy_tt_sell=0.051, usd_tt_buy=7.2)
-    service.upsert_snapshot(rate_date="2026-03-15", cny_tt_buy=1.11, usd_tt_sell=7.25, jpy_tt_sell=0.0505, usd_tt_buy=7.15)
+    service.upsert_snapshot(rate_date="2026-03-14", cny_tt_buy=1.1, eur_tt_buy=8.9, usd_tt_sell=7.2, jpy_tt_sell=0.05, usd_tt_buy=7.1)
+    service.upsert_snapshot(rate_date="2026-03-16", cny_tt_buy=1.12, eur_tt_buy=9.1, usd_tt_sell=7.3, jpy_tt_sell=0.051, usd_tt_buy=7.2)
+    service.upsert_snapshot(rate_date="2026-03-15", cny_tt_buy=1.11, eur_tt_buy=9.0, usd_tt_sell=7.25, jpy_tt_sell=0.0505, usd_tt_buy=7.15)
 
     items = service.list_snapshots(limit=10)
     assert len(items) == 3
     assert items[0]["date"] == "2026-03-16"
+    assert items[0]["eur_tt_buy"] == 9.1
     assert items[1]["date"] == "2026-03-15"
     assert items[2]["date"] == "2026-03-14"
 

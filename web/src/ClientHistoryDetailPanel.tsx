@@ -117,6 +117,20 @@ export function ClientHistoryDetailPanel({
   }
 
   const rows = data?.rows ?? []
+  const summary = data?.summary ?? null
+  const summaryRangeLabel = summary?.first_month && summary?.latest_month
+    ? (summary.first_month === summary.latest_month
+        ? summary.latest_month
+        : `${summary.first_month} 至 ${summary.latest_month}`)
+    : '暂无统计区间'
+  const summaryCards = summary ? [
+    { key: 'total_total', label: '累计汇总金额', value: summary.total_total, emphasis: true },
+    { key: 'total_consumption', label: '累计总消耗', value: summary.total_consumption },
+    { key: 'total_service_fee', label: '累计总服务费', value: summary.total_service_fee },
+    { key: 'total_net_consumption', label: '累计汇总纯消耗', value: summary.total_net_consumption },
+    { key: 'total_variable_service_fee', label: '累计服务费', value: summary.total_variable_service_fee },
+    { key: 'total_fixed_service_fee', label: '累计固定服务费', value: summary.total_fixed_service_fee },
+  ] : []
 
   return (
     <section className="client-history-section">
@@ -148,34 +162,59 @@ export function ClientHistoryDetailPanel({
                   description="当前没有可展示的历史账单明细。"
                 />
               ) : (
-                <div className="table-wrapper">
-                  <div className="data-table-container client-history-table-wrap">
-                  <table className="data-table client-history-table">
-                    <thead>
-                      <tr>
-                        <th className="col-month">月份</th>
-                        {BILLING_DETAIL_COLUMNS.map((column) => (
-                          <th key={column.key} className={column.numeric ? 'cell-number' : 'cell-type'}>
-                            {column.label}
-                          </th>
+                <>
+                  {summaryCards.length > 0 ? (
+                    <section className="client-history-summary-section">
+                      <div className="client-history-summary-head">
+                        <div className="client-history-summary-copy">
+                          <span className="client-history-kicker">汇总概览</span>
+                          <p className="client-history-period">统计区间：{summaryRangeLabel}</p>
+                        </div>
+                        <span className="client-history-summary-meta">共 {rows.length} 个账单月</span>
+                      </div>
+                      <div className="client-history-summary-grid">
+                        {summaryCards.map((card) => (
+                          <article
+                            key={card.key}
+                            className={`client-history-summary-card${card.emphasis ? ' is-emphasis' : ''}`}
+                          >
+                            <span className="summary-label">{card.label}</span>
+                            <strong>{formatNumber(card.value)}</strong>
+                          </article>
                         ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {rows.map((row) => (
-                        <tr key={row.month}>
-                          <td className="cell-name">{row.month}</td>
-                          {BILLING_DETAIL_COLUMNS.map((column) => (
-                            <td key={column.key} className={column.numeric ? 'cell-number' : 'cell-type'}>
-                              {renderMetricCell(row, column, formatNumber)}
-                            </td>
+                      </div>
+                    </section>
+                  ) : null}
+
+                  <div className="table-wrapper">
+                    <div className="data-table-container client-history-table-wrap">
+                      <table className="data-table client-history-table">
+                        <thead>
+                          <tr>
+                            <th className="col-month">月份</th>
+                            {BILLING_DETAIL_COLUMNS.map((column) => (
+                              <th key={column.key} className={column.numeric ? 'cell-number' : 'cell-type'}>
+                                {column.label}
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {rows.map((row) => (
+                            <tr key={row.month}>
+                              <td className="cell-name">{row.month}</td>
+                              {BILLING_DETAIL_COLUMNS.map((column) => (
+                                <td key={column.key} className={column.numeric ? 'cell-number' : 'cell-type'}>
+                                  {renderMetricCell(row, column, formatNumber)}
+                                </td>
+                              ))}
+                            </tr>
                           ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </>
               )}
             </>
           )}

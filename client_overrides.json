@@ -1,5 +1,5 @@
 {
-    "_comment": "客户特殊计费规则配置。每个客户可包含以下 action 类型：remove_time_constraint, force_service_type, fixed_rate, exclude_media, media_rate, force_no_fee, custom_label_alias",
+    "_comment": "客户特殊计费规则配置。每个客户可配置单条规则对象或按顺序执行的规则数组，action 类型包括：remove_time_constraint, force_service_type, fixed_rate, exclude_media, media_rate, force_no_fee, custom_label_alias",
     "overrides": {
         "昊一源": {
             "action": "remove_time_constraint",
@@ -17,11 +17,36 @@
             "condition_keyword": "无代投服务费",
             "condition_service_type": "代投"
         },
-        "美的": {
-            "action": "fixed_rate",
-            "description": "所有 '美的' 系客户统一按 5% 计算",
-            "rate": 0.05
-        },
+        "美的": [
+            {
+                "action": "media_rate",
+                "description": "Google、Facebook、YouTube、TikTok、Yandex、TTD 代投按 5% 计算",
+                "media": ["Google", "Facebook", "YouTube", "TikTok", "Yandex", "TTD"],
+                "service_type": "代投",
+                "rate": 0.05
+            },
+            {
+                "action": "media_rate",
+                "description": "Bing、MIQ、Taboola、Pinterest、Linkedin 代投按 8% 计算",
+                "media": ["Bing", "MIQ", "Taboola", "Pinterest", "Linkedin"],
+                "service_type": "代投",
+                "rate": 0.08
+            },
+            {
+                "action": "media_rate",
+                "description": "X、Reddit 代投按 6% 计算",
+                "media": ["X", "Reddit"],
+                "service_type": "代投",
+                "rate": 0.06
+            },
+            {
+                "action": "media_rate",
+                "description": "Yahoo、Naver 代投按 4% 计算",
+                "media": ["Yahoo", "Naver"],
+                "service_type": "代投",
+                "rate": 0.04
+            }
+        ],
         "纽莱克": {
             "action": "exclude_media",
             "description": "排除 Facebook 媒介（只计算 Google 代投）",

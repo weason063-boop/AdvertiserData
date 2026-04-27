@@ -37,6 +37,7 @@ interface ClientsPanelProps {
 }
 
 const REVIEW_FIELD_LABELS: Record<string, string> = {
+  department: '\u6267\u884c\u90e8\u95e8',
   business_type: '业务类型',
   entity: '主体',
   fee_clause: '服务费条款',
@@ -87,12 +88,26 @@ const formatDateTime = (value: string): string => {
   })
 }
 
+const isNewClientReview = (review: ContractChangeReview): boolean =>
+  ![
+    review.current_business_type,
+    review.current_department,
+    review.current_entity,
+    review.current_fee_clause,
+    review.current_payment_term,
+  ].some((value) => String(value ?? '').trim())
+
 const getReviewFieldValues = (review: ContractChangeReview, fieldName: string) => {
   switch (fieldName) {
     case 'business_type':
       return {
         current: review.current_business_type,
         next: review.new_business_type,
+      }
+    case 'department':
+      return {
+        current: review.current_department,
+        next: review.new_department,
       }
     case 'entity':
       return {
@@ -161,6 +176,8 @@ export function ClientsPanel({
         ...(review.change_fields || []),
         review.current_business_type,
         review.new_business_type,
+        review.current_department,
+        review.new_department,
         review.current_entity,
         review.new_entity,
         review.current_fee_clause,
@@ -362,6 +379,7 @@ export function ClientsPanel({
                 )}
 
                 {filteredReviews.map((review) => {
+                  const reviewIsNewClient = isNewClientReview(review)
                   const reviewItems = (review.change_fields || []).map((fieldName) => ({
                     fieldName,
                     label: REVIEW_FIELD_LABELS[fieldName] || fieldName,
@@ -380,7 +398,16 @@ export function ClientsPanel({
                           />
                         </td>
                       )}
-                      <td className="cell-name">{review.client_name}</td>
+                      <td className="cell-name">
+                        <div className={styles.clientNameCell}>
+                          <span>{review.client_name}</span>
+                          {reviewIsNewClient && (
+                            <span className={styles.clientSyncBadge}>
+                              {'\u65b0\u589e\u5f85\u786e\u8ba4'}
+                            </span>
+                          )}
+                        </div>
+                      </td>
                       <td className={styles.reviewFieldsCell}>
                         <div className={styles.reviewFieldTags}>
                           {reviewItems.map((item) => (

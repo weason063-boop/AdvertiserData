@@ -19,6 +19,34 @@ export interface CalculationResult {
   total: number
 }
 
+export interface DashboardStats {
+  consumption: number
+  fee: number
+  month: string
+  consumption_mom: number
+  fee_mom: number
+  consumption_yoy: number
+  fee_yoy: number
+}
+
+export interface DashboardTrendPoint {
+  month: string
+  total_consumption: number
+  total_service_fee: number
+}
+
+export interface DashboardTopClient {
+  client_name: string
+  consumption: number
+  service_fee: number
+}
+
+export interface DashboardData {
+  stats: DashboardStats | null
+  trend: DashboardTrendPoint[]
+  top_clients?: DashboardTopClient[]
+}
+
 export interface SyncResult {
   count: number
   message: string

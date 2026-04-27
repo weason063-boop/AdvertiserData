@@ -16,6 +16,7 @@ daily_fx_service = DailyFxSnapshotService()
 
 class DailySnapshotUpsertRequest(BaseModel):
     cny_tt_buy: float = Field(..., gt=0)
+    eur_tt_buy: float = Field(..., gt=0)
     usd_tt_sell: float = Field(..., gt=0)
     jpy_tt_sell: float = Field(..., gt=0)
     usd_tt_buy: float = Field(..., gt=0)
@@ -58,6 +59,7 @@ def upsert_daily_snapshot(
         snapshot = daily_fx_service.upsert_snapshot(
             rate_date=rate_date,
             cny_tt_buy=payload.cny_tt_buy,
+            eur_tt_buy=payload.eur_tt_buy,
             usd_tt_sell=payload.usd_tt_sell,
             jpy_tt_sell=payload.jpy_tt_sell,
             usd_tt_buy=payload.usd_tt_buy,

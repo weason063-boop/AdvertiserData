@@ -33,9 +33,10 @@ def build_cli_exchange_context(consumption_file: str, original_filename: str | N
     svc = CalculationService()
     filename = original_filename or Path(consumption_file).name
     month_hint = svc._parse_month_from_filename(filename)
-    has_rmb_rows = svc._contains_rmb_consumption(consumption_file)
-    has_jpy_rows = svc._contains_jpy_consumption(consumption_file)
-    exchange_context = svc._build_daily_exchange_context(require_snapshot=has_rmb_rows or has_jpy_rows)
+    has_rmb_rows = svc._contains_rmb_consumption(consumption_file, month_hint=month_hint)
+    has_eur_rows = svc._contains_eur_consumption(consumption_file, month_hint=month_hint)
+    has_jpy_rows = svc._contains_jpy_consumption(consumption_file, month_hint=month_hint)
+    exchange_context = svc._build_daily_exchange_context(require_snapshot=has_rmb_rows or has_eur_rows or has_jpy_rows)
     return month_hint or None, exchange_context
 
 

@@ -9,8 +9,9 @@ from calculate_service_fee import build_cli_exchange_context
 
 def test_cli_context_skips_snapshot_for_usd_only(monkeypatch):
     monkeypatch.setattr(CalculationService, "_parse_month_from_filename", lambda self, _filename: "2026-01")
-    monkeypatch.setattr(CalculationService, "_contains_rmb_consumption", lambda self, _path: False)
-    monkeypatch.setattr(CalculationService, "_contains_jpy_consumption", lambda self, _path: False)
+    monkeypatch.setattr(CalculationService, "_contains_rmb_consumption", lambda self, _path, month_hint=None: False)
+    monkeypatch.setattr(CalculationService, "_contains_eur_consumption", lambda self, _path, month_hint=None: False)
+    monkeypatch.setattr(CalculationService, "_contains_jpy_consumption", lambda self, _path, month_hint=None: False)
     monkeypatch.setattr(CalculationService, "_build_daily_exchange_context", lambda self, require_snapshot: {"hangseng_today": {}})
 
     month, context = build_cli_exchange_context("dummy.xlsx", "2026-01-consumption.xlsx")
@@ -21,8 +22,9 @@ def test_cli_context_skips_snapshot_for_usd_only(monkeypatch):
 
 def test_cli_context_reports_missing_daily_snapshot(monkeypatch):
     monkeypatch.setattr(CalculationService, "_parse_month_from_filename", lambda self, _filename: "2026-01")
-    monkeypatch.setattr(CalculationService, "_contains_rmb_consumption", lambda self, _path: False)
-    monkeypatch.setattr(CalculationService, "_contains_jpy_consumption", lambda self, _path: True)
+    monkeypatch.setattr(CalculationService, "_contains_rmb_consumption", lambda self, _path, month_hint=None: False)
+    monkeypatch.setattr(CalculationService, "_contains_eur_consumption", lambda self, _path, month_hint=None: False)
+    monkeypatch.setattr(CalculationService, "_contains_jpy_consumption", lambda self, _path, month_hint=None: True)
 
     def _raise_missing(self, require_snapshot: bool):
         assert require_snapshot is True
@@ -39,14 +41,16 @@ def test_cli_context_reports_missing_daily_snapshot(monkeypatch):
 
 def test_cli_context_collects_rmb_and_jpy_snapshot(monkeypatch):
     monkeypatch.setattr(CalculationService, "_parse_month_from_filename", lambda self, _filename: "2026-01")
-    monkeypatch.setattr(CalculationService, "_contains_rmb_consumption", lambda self, _path: True)
-    monkeypatch.setattr(CalculationService, "_contains_jpy_consumption", lambda self, _path: True)
+    monkeypatch.setattr(CalculationService, "_contains_rmb_consumption", lambda self, _path, month_hint=None: True)
+    monkeypatch.setattr(CalculationService, "_contains_eur_consumption", lambda self, _path, month_hint=None: True)
+    monkeypatch.setattr(CalculationService, "_contains_jpy_consumption", lambda self, _path, month_hint=None: True)
     monkeypatch.setattr(
         CalculationService,
         "_build_daily_exchange_context",
         lambda self, require_snapshot: {
             "hangseng_today": {
                 "cny_tt_buy": 1.1,
+                "eur_tt_buy": 9.0,
                 "usd_tt_sell": 7.2,
                 "jpy_tt_sell": 0.05,
                 "usd_tt_buy": 7.1,
@@ -58,4 +62,5 @@ def test_cli_context_collects_rmb_and_jpy_snapshot(monkeypatch):
 
     assert month == "2026-01"
     assert context["hangseng_today"]["cny_tt_buy"] == 1.1
+    assert context["hangseng_today"]["eur_tt_buy"] == 9.0
     assert context["hangseng_today"]["jpy_tt_sell"] == 0.05

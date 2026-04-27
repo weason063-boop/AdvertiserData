@@ -253,16 +253,29 @@ class TestTimeAwareClauses:
 class TestClientOverrides:
     """客户特殊规则测试（从 client_overrides.json 加载）"""
 
-    def test_meidi_fixed_rate(self):
-        """美的: 统一5%"""
+    def test_meidi_google_managed_rate(self):
+        """美的: Google 代投按 5%"""
         rate, fixed = parse_fee_clause("Any Clause", 'Google', '代投', 10000, client_name="美的")
         assert rate == 0.05
         assert fixed == 0.0
 
-    def test_meidi_variant(self):
-        """美的变种: '美的集团' 也应匹配"""
-        rate, fixed = parse_fee_clause("Any Clause", 'Google', '代投', 10000, client_name="美的集团")
+    def test_meidi_variant_bing_managed_rate(self):
+        """美的变种: '美的集团' 的 Bing 代投按 8%"""
+        rate, fixed = parse_fee_clause("Any Clause", 'Bing', '代投', 10000, client_name="美的集团")
+        assert rate == 0.08
+        assert fixed == 0.0
+
+    def test_meidi_yahoo_managed_rate(self):
+        """美的: Yahoo 代投按 4%"""
+        rate, fixed = parse_fee_clause("Any Clause", 'Yahoo', '代投', 10000, client_name="美的")
+        assert rate == 0.04
+        assert fixed == 0.0
+
+    def test_meidi_youtube_managed_rate_defaults_to_five_percent(self):
+        """美的: YouTube 代投暂时统一按 5%"""
+        rate, fixed = parse_fee_clause("Any Clause", 'YouTube', '代投', 10000, client_name="美的")
         assert rate == 0.05
+        assert fixed == 0.0
 
     def test_niulaike_excludes_facebook(self):
         """纽莱克: 排除 Facebook"""

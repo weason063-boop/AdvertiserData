@@ -30,12 +30,32 @@ _COL_MANAGED_CONSUMPTION = "\u4ee3\u6295\u6d88\u8017"
 _COL_FLOW_CONSUMPTION = "\u6d41\u6c34\u6d88\u8017"
 _COL_NET_SPEND = "\u6c47\u603b\u7eaf\u82b1\u8d39"
 _COL_NET_SPEND_ALT = "\u6c47\u603b\u7eaf\u6d88\u8017"
+_COL_BILL_TOTAL = "\u8d26\u5355\u6c47\u603b"
+_COL_MANAGED_SPLIT = "\u4ee3\u6295/\u54a8\u8be2\u62c6\u5206"
+_COL_FLOW_SPLIT = "\u6d41\u6c34\u62c6\u5206"
 _COL_FX_RATE = "\u6362\u6c47\u6c47\u7387"
 _COL_SERVICE_FEE = "\u670d\u52a1\u8d39"
 _COL_FIXED_SERVICE_FEE = "\u56fa\u5b9a\u670d\u52a1\u8d39"
 _COL_COUPON = "Coupon"
 _COL_TOTAL = "\u6c47\u603b"
 _COL_DST_CANON = "\u76d1\u7ba1\u8fd0\u8425\u8d39\u7528/\u6570\u5b57\u670d\u52a1\u7a0e(DST)"
+_COL_SOURCE_SHEET = "\u6765\u6e90Sheet"
+_HIDDEN_RESULT_SHEET_NAME = "_CALC_DATA"
+_CLIENT_ACCOUNT_SHEET_MARKERS = (
+    "\u5ba2\u6237\u7aef\u53e3\u8d26\u6237\u4ee3\u6295",
+    "\u5ba2\u6237\u7aef\u53e3\u4ee3\u6295",
+)
+_INTERNAL_SOURCE_ROW_COLUMN = "_\u6765\u6e90\u884c\u53f7"
+_INTERNAL_TARGET_MONTH_COLUMN = "_\u76ee\u6807\u6708\u6d88\u8017\u5217"
+_VISIBLE_FX_AUDIT_COLUMNS = (
+    "\u539f\u59cb\u4ee3\u6295\u6d88\u8017",
+    "\u539f\u59cb\u6d41\u6c34\u6d88\u8017",
+    "\u6362\u6c47\u6c47\u7387",
+    "\u6c47\u7387\u6765\u6e90",
+    "\u6c47\u7387\u65e5\u671f",
+    "\u6362\u6c47\u540e\u4ee3\u6295\u6d88\u8017USD",
+    "\u6362\u6c47\u540e\u6d41\u6c34\u6d88\u8017USD",
+)
 
 _DST_COLUMN_CANDIDATES = (
     "\u76d1\u7ba1\u8fd0\u8425\u8d39\u7528/\u6570\u5b57\u670d\u52a1\u7a0e(DST)\xa0",
@@ -128,53 +148,6 @@ def _normalize_service_type(service_type: str) -> str:
     return text
 
 
-def _allocate_fixed_fee_by_managed_ratio(
-    *,
-    total_fixed_fee: float,
-    row_managed_consumptions: list[tuple[int, float]],
-    fixed_fee_slots: list[float | None],
-) -> None:
-    """
-    Allocate customer-level fixed fee to managed rows by managed consumption ratio.
-
-    - Only rows with managed consumption > 0 participate.
-    - Keep 2-decimal accounting precision and make sure allocated sum equals total.
-    """
-    rounded_total = _round2(total_fixed_fee)
-    if rounded_total <= 0:
-        return
-
-    positive_rows = [(idx, value) for idx, value in row_managed_consumptions if value > 1e-9]
-    if not positive_rows:
-        return
-
-    basis_total = sum(value for _, value in positive_rows)
-    if basis_total <= 1e-9:
-        return
-
-    total_cents = int((Decimal(str(rounded_total)) * Decimal("100")).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
-    if total_cents <= 0:
-        return
-
-    allocations: list[list[object]] = []
-    distributed_cents = 0
-    for row_index, managed_value in positive_rows:
-        raw_share = Decimal(total_cents) * Decimal(str(managed_value)) / Decimal(str(basis_total))
-        floor_cents = int(raw_share)
-        remainder = raw_share - Decimal(floor_cents)
-        allocations.append([row_index, floor_cents, remainder])
-        distributed_cents += floor_cents
-
-    remaining_cents = total_cents - distributed_cents
-    if remaining_cents > 0:
-        allocations.sort(key=lambda item: (-item[2], item[0]))
-        for i in range(remaining_cents):
-            allocations[i % len(allocations)][1] += 1
-
-    for row_index, cents, _ in allocations:
-        fixed_fee_slots[int(row_index)] = float(Decimal(int(cents)) / Decimal("100"))
-
-
 def _to_float(value) -> float:
     """Convert mixed spreadsheet values to float safely."""
     if value is None:
@@ -257,17 +230,102 @@ def _standardize_headers(df: pd.DataFrame) -> pd.DataFrame:
                     out.loc[missing_mask, canonical] = variant_series.loc[missing_mask]
                 out = out.drop(columns=[variant])
 
+
+    return out
+
+
+def _numeric_series(df: pd.DataFrame, column_name: str) -> pd.Series:
+    if column_name not in df.columns:
+        return pd.Series(float("nan"), index=df.index, dtype="float64")
+    return pd.to_numeric(df[column_name], errors="coerce")
+
+
+def _missing_numeric_mask(series: pd.Series) -> pd.Series:
+    numeric = pd.to_numeric(series, errors="coerce")
+    return numeric.isna() | (numeric.abs() < 1e-9)
+
+
+def _populate_consumption_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Some foreign-currency sheets store spend in bill-summary columns instead of
+    the canonical managed/flow columns. Hydrate the canonical columns so the
+    fee engine and dashboard use the same converted spend basis.
+    """
+    out = df.copy()
+    if out.empty:
+        return out
+
+    if _COL_MANAGED_CONSUMPTION not in out.columns:
+        out[_COL_MANAGED_CONSUMPTION] = 0.0
+    if _COL_FLOW_CONSUMPTION not in out.columns:
+        out[_COL_FLOW_CONSUMPTION] = 0.0
+    if _COL_NET_SPEND not in out.columns:
+        out[_COL_NET_SPEND] = 0.0
+
+    service_type_series = (
+        out[_COL_SERVICE_TYPE].apply(_normalize_service_type)
+        if _COL_SERVICE_TYPE in out.columns
+        else pd.Series("", index=out.index, dtype="object")
+    )
+
+    managed_split = _numeric_series(out, _COL_MANAGED_SPLIT)
+    flow_split = _numeric_series(out, _COL_FLOW_SPLIT)
+    bill_total = _numeric_series(out, _COL_BILL_TOTAL)
+
+    managed_values = _numeric_series(out, _COL_MANAGED_CONSUMPTION)
+    flow_values = _numeric_series(out, _COL_FLOW_CONSUMPTION)
+    total_values = _numeric_series(out, _COL_NET_SPEND)
+
+    use_managed_split = _missing_numeric_mask(managed_values) & managed_split.notna() & (managed_split.abs() >= 1e-9)
+    out.loc[use_managed_split, _COL_MANAGED_CONSUMPTION] = managed_split.loc[use_managed_split]
+
+    use_flow_split = _missing_numeric_mask(flow_values) & flow_split.notna() & (flow_split.abs() >= 1e-9)
+    out.loc[use_flow_split, _COL_FLOW_CONSUMPTION] = flow_split.loc[use_flow_split]
+
+    managed_values = _numeric_series(out, _COL_MANAGED_CONSUMPTION)
+    flow_values = _numeric_series(out, _COL_FLOW_CONSUMPTION)
+
+    use_bill_total_for_managed = (
+        _missing_numeric_mask(managed_values)
+        & (service_type_series == "\u4ee3\u6295")
+        & bill_total.notna()
+        & (bill_total.abs() >= 1e-9)
+    )
+    out.loc[use_bill_total_for_managed, _COL_MANAGED_CONSUMPTION] = bill_total.loc[use_bill_total_for_managed]
+
+    use_bill_total_for_flow = (
+        _missing_numeric_mask(flow_values)
+        & (service_type_series == "\u6d41\u6c34")
+        & bill_total.notna()
+        & (bill_total.abs() >= 1e-9)
+    )
+    out.loc[use_bill_total_for_flow, _COL_FLOW_CONSUMPTION] = bill_total.loc[use_bill_total_for_flow]
+
+    split_total = (
+        pd.to_numeric(out[_COL_MANAGED_CONSUMPTION], errors="coerce").fillna(0.0)
+        + pd.to_numeric(out[_COL_FLOW_CONSUMPTION], errors="coerce").fillna(0.0)
+    )
+    total_values = _numeric_series(out, _COL_NET_SPEND)
+    use_split_total_for_total = _missing_numeric_mask(total_values) & (split_total.abs() >= 1e-9)
+    out.loc[use_split_total_for_total, _COL_NET_SPEND] = split_total.loc[use_split_total_for_total]
+
+    total_values = _numeric_series(out, _COL_NET_SPEND)
+    use_bill_total_for_total = _missing_numeric_mask(total_values) & bill_total.notna() & (bill_total.abs() >= 1e-9)
+    out.loc[use_bill_total_for_total, _COL_NET_SPEND] = bill_total.loc[use_bill_total_for_total]
+
     return out
 
 
 def _normalize_sheet_currency(sheet_name: str) -> Optional[str]:
     name = str(sheet_name or "").strip().lower().replace(" ", "")
-    if name in {"usd", "美元", "us$"}:
-        return "USD"
-    if name in {"rmb", "cny", "人民币"}:
-        return "RMB"
-    if name in {"jpy", "日元", "日币"}:
+    if any(token in name for token in {"jpy", "日元", "日币"}):
         return "JPY"
+    if any(token in name for token in {"eur", "欧元"}):
+        return "EUR"
+    if any(token in name for token in {"rmb", "cny", "人民币"}):
+        return "RMB"
+    if any(token in name for token in {"usd", "美元", "美金", "us$"}):
+        return "USD"
     if "其他" in name:
         return "OTHER"
     return None
@@ -284,11 +342,47 @@ def _normalize_currency_value(value) -> str:
     text = str(value or "").strip().upper().replace(" ", "")
     if text in {"CNY", "RMB", "人民币", "RENMINBI"}:
         return "RMB"
+    if text in {"EUR", "欧元"}:
+        return "EUR"
     if text in {"JPY", "日元", "日币", "日圆"}:
         return "JPY"
     if text in {"USD", "美元", "US$"}:
         return "USD"
     return text
+
+
+def _match_currency_hint(value) -> str:
+    text = str(value or "").strip().upper().replace(" ", "")
+    if not text:
+        return ""
+    if any(token in text for token in {"CNY", "RMB", "人民币", "RENMINBI"}):
+        return "RMB"
+    if any(token in text for token in {"EUR", "欧元"}):
+        return "EUR"
+    if any(token in text for token in {"JPY", "日元", "日币", "日圆"}):
+        return "JPY"
+    if any(token in text for token in {"USD", "US$", "美元", "美金"}):
+        return "USD"
+    return ""
+
+
+def _infer_client_account_currency(row: pd.Series) -> str:
+    explicit_raw = row.get("币种")
+    explicit_hint = _match_currency_hint(explicit_raw)
+    if explicit_hint:
+        return explicit_hint
+
+    explicit = _normalize_currency_value(explicit_raw)
+    if explicit:
+        return explicit
+
+    for column_name in ("渠道", "媒介", "母公司", "帐号 ID", "账号 ID", "账号ID"):
+        hinted = _match_currency_hint(row.get(column_name))
+        if hinted:
+            return hinted
+
+    # Historical client-account sheets often leave USD rows blank in the 币种 column.
+    return "USD"
 
 
 def _parse_month_text(text: str) -> Optional[str]:
@@ -366,6 +460,67 @@ def _detect_row_month(row: pd.Series, default_month: Optional[str]) -> Optional[
             return parsed
     return default_month
 
+
+def _extract_client_account_month(column_name: object) -> Optional[str]:
+    text = str(column_name or "").strip()
+    if not text or "消耗" not in text:
+        return None
+    return _parse_month_text(text)
+
+
+def _is_client_account_sheet_name(sheet_name: str) -> bool:
+    text = str(sheet_name or "")
+    return any(marker in text for marker in _CLIENT_ACCOUNT_SHEET_MARKERS)
+
+
+def _is_client_account_managed_sheet(sheet_name: str, df_sheet: pd.DataFrame) -> bool:
+    if not _is_client_account_sheet_name(sheet_name):
+        return False
+
+    cols = set(df_sheet.columns.tolist())
+    if not {"母公司", "媒介", "币种"}.issubset(cols):
+        return False
+
+    return any(_extract_client_account_month(column_name) for column_name in df_sheet.columns)
+
+
+def _find_client_account_month_column(df_sheet: pd.DataFrame, target_month: Optional[str]) -> Optional[str]:
+    if not target_month:
+        return None
+
+    for column_name in df_sheet.columns:
+        if _extract_client_account_month(column_name) == target_month:
+            return str(column_name)
+    return None
+
+
+def _build_client_account_managed_rows(
+    df_sheet: pd.DataFrame,
+    sheet_name: str,
+    *,
+    target_month: str,
+    month_column: str,
+) -> pd.DataFrame:
+    monthly_consumption = pd.to_numeric(df_sheet.get(month_column), errors="coerce").fillna(0.0)
+    currency_series = df_sheet.apply(_infer_client_account_currency, axis=1)
+
+    out = pd.DataFrame(index=df_sheet.index)
+    for column_name in ("媒介", "渠道", "帐号 ID", "母公司", "BD", "优化师", "优化师组", "币种"):
+        if column_name in df_sheet.columns:
+            out[column_name] = df_sheet[column_name]
+
+    out["服务类型"] = "代投"
+    out["代投消耗"] = monthly_consumption
+    out["流水消耗"] = 0.0
+    out["汇总纯花费"] = monthly_consumption
+    out["币种"] = currency_series
+    out["月份归属"] = target_month
+    out[_COL_SOURCE_SHEET] = sheet_name
+    out[_INTERNAL_SOURCE_ROW_COLUMN] = df_sheet.index.astype(int)
+    out[_INTERNAL_TARGET_MONTH_COLUMN] = month_column
+    return out
+
+
 def _resolve_dst_column(df: pd.DataFrame) -> Optional[str]:
     for candidate in _DST_COLUMN_CANDIDATES:
         if candidate in df.columns:
@@ -400,7 +555,7 @@ def _load_consumption_data(consumption_path: str) -> pd.DataFrame:
         currency_tag = _normalize_sheet_currency(sheet)
         df_local = df_sheet.copy()
 
-        if currency_tag in {"USD", "JPY", "RMB"}:
+        if currency_tag in {"USD", "JPY", "RMB", "EUR"}:
             df_local["币种"] = currency_tag
         elif currency_tag == "OTHER":
             if "币种" not in df_local.columns:
@@ -434,6 +589,19 @@ def _parse_hangseng_rmb_to_usd_context(exchange_context: dict) -> tuple[float, s
     return cny_tt_buy / usd_tt_sell, source, rate_date
 
 
+def _parse_hangseng_eur_to_usd_context(exchange_context: dict) -> tuple[float, str, str]:
+    hs = (exchange_context or {}).get("hangseng_today") or {}
+    eur_tt_buy = _to_float(hs.get("eur_tt_buy"))
+    usd_tt_sell = _to_float(hs.get("usd_tt_sell"))
+    rate_date = str(hs.get("rate_date") or "")
+    source = str(hs.get("source") or "hangseng_daily_snapshot")
+
+    if eur_tt_buy <= 0 or usd_tt_sell <= 0:
+        raise ValueError("缺少恒生可用的 EUR 电汇买入或 USD 电汇卖出汇率，无法执行 EUR->USD")
+
+    return eur_tt_buy / usd_tt_sell, source, rate_date
+
+
 def _parse_hangseng_jpy_to_usd_context(exchange_context: dict) -> tuple[float, str, str]:
     hs = (exchange_context or {}).get("hangseng_today") or {}
     jpy_tt_sell = _to_float(hs.get("jpy_tt_sell"))
@@ -454,6 +622,8 @@ def _apply_exchange_rates(df: pd.DataFrame, exchange_context: dict, default_mont
     out["原始代投消耗"] = out["代投消耗"].apply(_to_float) if "代投消耗" in out.columns else 0.0
     out["原始流水消耗"] = out["流水消耗"].apply(_to_float) if "流水消耗" in out.columns else 0.0
 
+    out["原始汇总纯花费"] = out[_COL_NET_SPEND].apply(_to_float) if _COL_NET_SPEND in out.columns else 0.0
+
     rates = []
     sources = []
     rate_dates = []
@@ -467,12 +637,14 @@ def _apply_exchange_rates(df: pd.DataFrame, exchange_context: dict, default_mont
             dt = ""
         elif currency == "RMB":
             fx_rate, src, dt = _parse_hangseng_rmb_to_usd_context(exchange_context)
+        elif currency == "EUR":
+            fx_rate, src, dt = _parse_hangseng_eur_to_usd_context(exchange_context)
         elif currency == "JPY":
             # Keep month parse side effect compatible for data auditing.
             _detect_row_month(row, default_month)
             fx_rate, src, dt = _parse_hangseng_jpy_to_usd_context(exchange_context)
         else:
-            raise ValueError(f"暂不支持币种 {currency} 自动换汇，请先转为 USD/RMB/JPY 或扩展汇率规则")
+            raise ValueError(f"暂不支持币种 {currency} 自动换汇，请先转为 USD/RMB/JPY/EUR 或扩展汇率规则")
 
         rates.append(fx_rate)
         sources.append(src)
@@ -485,10 +657,236 @@ def _apply_exchange_rates(df: pd.DataFrame, exchange_context: dict, default_mont
     out["代投消耗"] = out["原始代投消耗"] * out["换汇汇率"]
     out["流水消耗"] = out["原始流水消耗"] * out["换汇汇率"]
 
+    if _COL_NET_SPEND in out.columns:
+        out[_COL_NET_SPEND] = out["原始汇总纯花费"] * out["换汇汇率"]
     out["换汇后代投消耗USD"] = out["代投消耗"].round(6)
     out["换汇后流水消耗USD"] = out["流水消耗"].round(6)
 
     return out
+
+
+def _load_consumption_data(
+    consumption_path: str,
+    *,
+    calculation_date: Optional[str],
+) -> tuple[pd.DataFrame, dict]:
+    """Load consumption data from multi-sheet workbook."""
+    workbook = pd.ExcelFile(consumption_path)
+    frames = []
+    included_sheet_names: list[str] = []
+    client_account_sheets: dict[str, dict] = {}
+    target_month = _parse_month_text(calculation_date or "")
+
+    for sheet in workbook.sheet_names:
+        df_sheet = pd.read_excel(workbook, sheet_name=sheet)
+        raw_sheet_df = df_sheet.copy()
+        df_sheet = _standardize_headers(df_sheet)
+        df_sheet = _populate_consumption_columns(df_sheet)
+        if df_sheet.empty:
+            continue
+
+        if _is_client_account_managed_sheet(sheet, df_sheet):
+            month_column = _find_client_account_month_column(df_sheet, target_month)
+            if not target_month or not month_column:
+                raise ValueError(
+                    f"{sheet} Sheet 未找到与计算月份匹配的消耗列，当前计算月份: {calculation_date or '未知'}"
+                )
+
+            frames.append(
+                _build_client_account_managed_rows(
+                    df_sheet,
+                    sheet,
+                    target_month=target_month,
+                    month_column=month_column,
+                )
+            )
+            included_sheet_names.append(sheet)
+            client_account_sheets[sheet] = {
+                "original_df": raw_sheet_df,
+                "target_month_column": month_column,
+            }
+            continue
+
+        if "母公司" not in df_sheet.columns or "媒介" not in df_sheet.columns or "服务类型" not in df_sheet.columns:
+            logger.info("Skipping non-consumption sheet: %s", sheet)
+            continue
+
+        currency_tag = _normalize_sheet_currency(sheet)
+        df_local = df_sheet.copy()
+
+        if currency_tag in {"USD", "JPY", "RMB", "EUR"}:
+            df_local["币种"] = currency_tag
+        elif currency_tag == "OTHER":
+            if "币种" not in df_local.columns:
+                raise ValueError("'其他币种' Sheet 缺少 '币种' 列，无法换汇")
+            df_local["币种"] = df_local["币种"].apply(_normalize_currency_value)
+        else:
+            if "币种" in df_local.columns:
+                df_local["币种"] = df_local["币种"].apply(_normalize_currency_value)
+            else:
+                df_local["币种"] = "USD"
+
+        df_local[_COL_SOURCE_SHEET] = sheet
+        frames.append(df_local)
+        included_sheet_names.append(sheet)
+
+    if not frames:
+        raise ValueError("未在上传文件中找到有效消费数据 Sheet（需包含 母公司/媒介/服务类型 列）")
+
+    return _populate_consumption_columns(_standardize_headers(pd.concat(frames, ignore_index=True))), {
+        "sheet_order": workbook.sheet_names,
+        "included_sheet_names": included_sheet_names,
+        "client_account_sheets": client_account_sheets,
+    }
+
+
+def _build_client_account_result_column_names(month_column: str) -> tuple[str, str, str, str]:
+    text = str(month_column or "").strip()
+    if "消耗" in text:
+        prefix = text.replace("消耗", "", 1)
+    else:
+        prefix = text
+    return (
+        f"{prefix}服务费",
+        f"{prefix}固定服务费",
+        f"{prefix}换汇汇率",
+        f"{prefix}换汇后消耗USD",
+    )
+
+
+def _build_client_account_output_sheet(
+    original_df: pd.DataFrame,
+    result_rows: pd.DataFrame,
+    *,
+    target_month_column: str,
+) -> pd.DataFrame:
+    output_df = original_df.copy()
+    if target_month_column not in output_df.columns:
+        return output_df
+
+    result_map = result_rows.set_index(_INTERNAL_SOURCE_ROW_COLUMN)
+    service_col, fixed_col, fx_col, usd_col = _build_client_account_result_column_names(target_month_column)
+    service_series = output_df.index.to_series().map(result_map["服务费"]) if "服务费" in result_map else None
+    fixed_series = output_df.index.to_series().map(result_map["固定服务费"]) if "固定服务费" in result_map else None
+    fx_series = output_df.index.to_series().map(result_map["换汇汇率"]) if "换汇汇率" in result_map else None
+    usd_series = (
+        output_df.index.to_series().map(result_map["换汇后代投消耗USD"])
+        if "换汇后代投消耗USD" in result_map
+        else None
+    )
+
+    insert_at = output_df.columns.get_loc(target_month_column) + 1
+    output_df.insert(insert_at, service_col, service_series)
+    output_df.insert(insert_at + 1, fixed_col, fixed_series)
+    output_df.insert(insert_at + 2, fx_col, fx_series)
+    output_df.insert(insert_at + 3, usd_col, usd_series)
+    return output_df
+
+
+def _build_hidden_result_sheet(df: pd.DataFrame) -> pd.DataFrame:
+    return df.drop(
+        columns=[
+            _INTERNAL_SOURCE_ROW_COLUMN,
+            _INTERNAL_TARGET_MONTH_COLUMN,
+        ],
+        errors="ignore",
+    )
+
+
+def _build_client_account_output_sheet_v2(
+    original_df: pd.DataFrame,
+    result_rows: pd.DataFrame,
+    *,
+    target_month_column: str,
+) -> pd.DataFrame:
+    output_df = original_df.copy()
+    if target_month_column not in output_df.columns:
+        return output_df
+
+    result_map = result_rows.set_index(_INTERNAL_SOURCE_ROW_COLUMN)
+    service_col, fixed_col, fx_col, usd_col = _build_client_account_result_column_names(target_month_column)
+    service_series = output_df.index.to_series().map(result_map[_COL_SERVICE_FEE]) if _COL_SERVICE_FEE in result_map else None
+    fixed_series = output_df.index.to_series().map(result_map[_COL_FIXED_SERVICE_FEE]) if _COL_FIXED_SERVICE_FEE in result_map else None
+    fx_series = output_df.index.to_series().map(result_map["换汇汇率"]) if "换汇汇率" in result_map else None
+    usd_series = (
+        output_df.index.to_series().map(result_map["换汇后代投消耗USD"])
+        if "换汇后代投消耗USD" in result_map
+        else None
+    )
+    currency_series = (
+        output_df.index.to_series().map(result_map["币种"])
+        if "币种" in result_map
+        else pd.Series("USD", index=output_df.index, dtype="object")
+    )
+    normalized_currency = currency_series.apply(_normalize_currency_value).replace("", "USD")
+    show_fx_columns = bool((normalized_currency != "USD").any())
+
+    insert_at = output_df.columns.get_loc(target_month_column) + 1
+    output_df.insert(insert_at, service_col, service_series)
+    output_df.insert(insert_at + 1, fixed_col, fixed_series)
+    if show_fx_columns:
+        non_usd_mask = normalized_currency != "USD"
+        if isinstance(fx_series, pd.Series):
+            fx_series = fx_series.where(non_usd_mask)
+        if isinstance(usd_series, pd.Series):
+            usd_series = usd_series.where(non_usd_mask)
+        output_df.insert(insert_at + 2, fx_col, fx_series)
+        output_df.insert(insert_at + 3, usd_col, usd_series)
+    return output_df
+
+
+def _build_visible_result_sheet(sheet_rows: pd.DataFrame) -> pd.DataFrame:
+    visible_df = sheet_rows.drop(
+        columns=[
+            _COL_SOURCE_SHEET,
+            _INTERNAL_SOURCE_ROW_COLUMN,
+            _INTERNAL_TARGET_MONTH_COLUMN,
+        ],
+        errors="ignore",
+    ).copy()
+    if visible_df.empty or "币种" not in visible_df.columns:
+        return visible_df
+
+    currency_series = visible_df["币种"].apply(_normalize_currency_value).replace("", "USD")
+    usd_mask = currency_series == "USD"
+    if bool(usd_mask.all()):
+        return visible_df.drop(columns=list(_VISIBLE_FX_AUDIT_COLUMNS), errors="ignore")
+
+    if bool(usd_mask.any()):
+        for column_name in _VISIBLE_FX_AUDIT_COLUMNS:
+            if column_name in visible_df.columns:
+                visible_df.loc[usd_mask, column_name] = None
+    return visible_df
+
+
+def _write_result_workbook(output_path: str, df: pd.DataFrame, workbook_meta: dict) -> None:
+    client_account_sheets = workbook_meta.get("client_account_sheets", {})
+    included_sheet_set = set(workbook_meta.get("included_sheet_names", []))
+    visible_sheet_names = [
+        sheet_name
+        for sheet_name in workbook_meta.get("sheet_order", [])
+        if sheet_name in included_sheet_set
+    ]
+
+    with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+        for sheet_name in visible_sheet_names:
+            sheet_rows = df[df[_COL_SOURCE_SHEET] == sheet_name].copy()
+
+            if sheet_name in client_account_sheets:
+                visible_df = _build_client_account_output_sheet_v2(
+                    client_account_sheets[sheet_name]["original_df"],
+                    sheet_rows,
+                    target_month_column=client_account_sheets[sheet_name]["target_month_column"],
+                )
+                visible_df.to_excel(writer, index=False, sheet_name=sheet_name)
+                continue
+
+            visible_df = _build_visible_result_sheet(sheet_rows)
+            visible_df.to_excel(writer, index=False, sheet_name=sheet_name)
+
+        hidden_df = _build_hidden_result_sheet(df)
+        hidden_df.to_excel(writer, index=False, sheet_name=_HIDDEN_RESULT_SHEET_NAME)
+        writer.book[_HIDDEN_RESULT_SHEET_NAME].sheet_state = "hidden"
 
 
 def calculate_service_fees(
@@ -526,12 +924,16 @@ def calculate_service_fees(
 
     logger.info("Loaded %s contract clauses", len(contract_terms))
 
-    df_raw = _load_consumption_data(consumption_path)
+    df_raw, workbook_meta = _load_consumption_data(
+        consumption_path,
+        calculation_date=calculation_date,
+    )
     logger.info("Loaded %s consumption rows", len(df_raw))
 
     exchange_context = kwargs.get("exchange_context") or {}
     df = _apply_exchange_rates(df_raw, exchange_context, default_month)
     df = _standardize_headers(df)
+    df = _populate_consumption_columns(df)
 
     coupon_idx = df.columns.get_loc(_COL_COUPON) if _COL_COUPON in df.columns else len(df.columns)
 
@@ -550,8 +952,6 @@ def calculate_service_fees(
     service_fees = []
     fixed_fees: list[float | None] = [None] * len(df)
     customer_fixed_fee_filled = set()
-    customer_fixed_fee_totals: dict[str, float] = {}
-    customer_managed_rows: dict[str, list[tuple[int, float]]] = {}
     unsupported_service_type_logged: set[str] = set()
     from billing.clause_parser import MEDIA_KEYWORDS
 
@@ -579,9 +979,6 @@ def calculate_service_fees(
                     service_type,
                 )
                 unsupported_service_type_logged.add(warn_key)
-
-        if is_managed_service and daitou_consumption > 1e-9:
-            customer_managed_rows.setdefault(customer_str, []).append((row_idx, daitou_consumption))
 
         fee = 0.0
         fixed = 0.0
@@ -657,24 +1054,20 @@ def calculate_service_fees(
                 fixed = 0.0
 
         service_fees.append(_round2(fee) if fee > 0 else None)
-        if is_managed_service and fixed > 0:
+        if is_managed_service and daitou_consumption > 1e-9 and fixed > 0:
             contains_ge_han = any(kw in str(clause) for kw in ["含", "各", "单渠道", "单个渠道", "每个"])
             contains_heji = any(kw in str(clause) for kw in ["合计", "总体", "一共"])
             media_aliases = MEDIA_KEYWORDS.get(media, [media])
             media_in_clause = any(a.lower() in str(clause).lower() for a in media_aliases)
-            is_per_media = (contains_ge_han or media_in_clause) and not contains_heji
+            # Explicit per-media markers such as "各1000" must still count per
+            # media even when the clause also contains aggregate waiver text
+            # like "合计消耗*7%大于等于3000".
+            is_per_media = contains_ge_han or (media_in_clause and not contains_heji)
             dedup_key = (customer_str, media) if is_per_media else customer_str
 
             if dedup_key not in customer_fixed_fee_filled:
-                customer_fixed_fee_totals[customer_str] = customer_fixed_fee_totals.get(customer_str, 0.0) + _round2(fixed)
+                fixed_fees[row_idx] = _round2(fixed)
                 customer_fixed_fee_filled.add(dedup_key)
-
-    for customer_str, total_fixed_fee in customer_fixed_fee_totals.items():
-        _allocate_fixed_fee_by_managed_ratio(
-            total_fixed_fee=total_fixed_fee,
-            row_managed_consumptions=customer_managed_rows.get(customer_str, []),
-            fixed_fee_slots=fixed_fees,
-        )
 
     if "服务费" in df.columns:
         df["服务费"] = service_fees
@@ -714,6 +1107,6 @@ def calculate_service_fees(
         input_path = Path(consumption_path)
         output_path = input_path.parent / f"{input_path.stem}_results{input_path.suffix}"
 
-    df.to_excel(output_path, index=False)
+    _write_result_workbook(str(output_path), df, workbook_meta)
     logger.info("Calculation completed, output saved to %s", output_path)
     return str(output_path)

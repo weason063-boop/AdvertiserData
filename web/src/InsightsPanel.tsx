@@ -14,7 +14,7 @@ interface InsightMetric {
     trend?: string; // for churn
     consecutive_months?: number;
     growth_amount?: number; // for growth
-    recent_values?: number[]; // for churn sparkline
+    recent_values?: Array<{ month: string; consumption: number }>; // for churn sparkline
 }
 
 interface SegmentationData {
@@ -41,6 +41,11 @@ interface InsightsData {
 const formatCurrency = (val: number | undefined) => {
     if (val === undefined) return '$0';
     return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(val);
+}
+
+const toFiniteNumber = (value: unknown): number | undefined => {
+    const num = Number(value);
+    return Number.isFinite(num) ? num : undefined;
 }
 
 export function InsightsPanel() {
@@ -126,13 +131,13 @@ export function InsightsPanel() {
                             {item.recent_values && item.recent_values.length > 0 && (
                                 <div style={{ width: 80, height: 32 }}>
                                     <ResponsiveContainer width="100%" height="100%">
-                                        <AreaChart data={item.recent_values.map((v: any) => ({ month: v.month, val: v.consumption }))}>
+                                        <AreaChart data={item.recent_values.map((v) => ({ month: v.month, val: v.consumption }))}>
                                             <XAxis dataKey="month" hide />
                                             <Tooltip
                                                 contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)', padding: '4px 8px', fontSize: '12px' }}
                                                 itemStyle={{ color: '#EF4444', padding: 0 }}
                                                 labelStyle={{ color: '#94A3B8', marginBottom: '2px', fontSize: '10px' }}
-                                                formatter={(value: any) => [formatCurrency(value), '']}
+                                                formatter={(value: unknown) => [formatCurrency(toFiniteNumber(value)), '']}
                                             />
                                             <Area type="monotone" dataKey="val" stroke="var(--danger)" fill="#FEF2F2" strokeWidth={2} />
                                         </AreaChart>

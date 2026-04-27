@@ -18,6 +18,11 @@ interface TrendData {
     service_fee: number
 }
 
+interface ClientSearchResult {
+    id: string | number
+    name: string
+}
+
 interface TrendResponse {
     client_name: string
     data: TrendData[]
@@ -37,7 +42,7 @@ export function ClientTrendModal({ clientName, onClose }: ClientTrendModalProps)
     const [compareClient, setCompareClient] = useState<string | null>(null)
     const [compareData, setCompareData] = useState<TrendResponse | null>(null)
     const [searchTerm, setSearchTerm] = useState('')
-    const [searchResults, setSearchResults] = useState<any[]>([])
+    const [searchResults, setSearchResults] = useState<ClientSearchResult[]>([])
     const [showSearch, setShowSearch] = useState(false)
 
     useEffect(() => {
@@ -72,11 +77,11 @@ export function ClientTrendModal({ clientName, onClose }: ClientTrendModalProps)
         }
         const timer = setTimeout(async () => {
             try {
-                const { data } = await apiJson<{ clients: any[] }>(
+                const { data } = await apiJson<{ clients?: ClientSearchResult[] }>(
                     `/api/clients?search=${encodeURIComponent(searchTerm)}`,
                 )
                 // Filter out current client
-                setSearchResults(data.clients.filter((c: any) => c.name !== clientName))
+                setSearchResults((data.clients || []).filter((c) => c.name !== clientName))
             } catch (e) {
                 console.error(e)
             }
@@ -239,9 +244,9 @@ export function ClientTrendModal({ clientName, onClose }: ClientTrendModalProps)
                                                 boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)',
                                                 padding: '12px 16px'
                                             }}
-                                            formatter={(val: any, name: any) => [
-                                                formatCurrency(val),
-                                                name === 'consumption' ? clientName : name === 'consumption_compare' ? compareClient : name
+                                            formatter={(val: unknown, name: unknown) => [
+                                                formatCurrency(Number(val)),
+                                                name === 'consumption' ? clientName : name === 'consumption_compare' ? compareClient : String(name)
                                             ]}
                                             labelStyle={{ color: '#64748B', marginBottom: '4px' }}
                                         />

@@ -157,6 +157,7 @@ class DailyFxSnapshotService:
         self,
         rate_date: str,
         cny_tt_buy: float,
+        eur_tt_buy: float,
         usd_tt_sell: float,
         jpy_tt_sell: float,
         usd_tt_buy: float,
@@ -178,6 +179,7 @@ class DailyFxSnapshotService:
 
         values = {
             "cny_tt_buy": float(cny_tt_buy),
+            "eur_tt_buy": float(eur_tt_buy),
             "usd_tt_sell": float(usd_tt_sell),
             "jpy_tt_sell": float(jpy_tt_sell),
             "usd_tt_buy": float(usd_tt_buy),
@@ -197,6 +199,7 @@ class DailyFxSnapshotService:
         snapshot = {
             "rate_date": normalized_date,
             "cny_tt_buy": values["cny_tt_buy"],
+            "eur_tt_buy": values["eur_tt_buy"],
             "usd_tt_sell": values["usd_tt_sell"],
             "jpy_tt_sell": values["jpy_tt_sell"],
             "usd_tt_buy": values["usd_tt_buy"],
@@ -217,6 +220,7 @@ class DailyFxSnapshotService:
             metadata={
                 "source": "manual",
                 "cny_tt_buy": values["cny_tt_buy"],
+                "eur_tt_buy": values["eur_tt_buy"],
                 "usd_tt_sell": values["usd_tt_sell"],
                 "jpy_tt_sell": values["jpy_tt_sell"],
                 "usd_tt_buy": values["usd_tt_buy"],

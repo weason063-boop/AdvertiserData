@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ComponentType } from 'react'
+import { useEffect, useMemo, useRef, useState, type ComponentType } from 'react'
 import {
   Bar,
   BarChart,
@@ -18,6 +18,7 @@ import { ClientTrendModal } from './ClientTrendModal'
 import { Skeleton } from './Skeleton'
 import { EmptyState } from './EmptyState'
 import { apiJson } from './apiClient'
+import type { DashboardData } from './billingTypes'
 
 type MetricMode = 'consumption' | 'fee'
 type Granularity = 'month' | 'quarter'
@@ -26,22 +27,9 @@ type MonthWorkbenchView = 'dual' | 'share' | 'mom' | 'yoy'
 type QuarterCompareMode = 'qoq' | 'yoy' | 'dual'
 type QuarterWorkbenchView = 'dual' | 'share' | 'qoq' | 'yoy'
 
-interface DashboardData {
-  stats: {
-    consumption: number
-    fee: number
-    month: string
-    consumption_mom: number
-    fee_mom: number
-    consumption_yoy: number
-    fee_yoy: number
-  } | null
-  trend: Array<{ month: string; total_consumption: number; total_service_fee: number }>
-  top_clients?: Array<{ client_name: string; consumption: number; service_fee: number }>
-}
-
 interface DashboardProps {
   data: DashboardData
+  preferredMonth?: string | null
   loading?: boolean
   onNotify?: (message: string, type: 'info' | 'success' | 'error') => void
   onRequireAuth?: () => void
@@ -169,6 +157,7 @@ interface QuarterOverviewMetric {
 }
 
 const MONTH_WINDOW_OPTIONS = [6, 12]
+const EMPTY_TOP_CLIENTS: NonNullable<DashboardData['top_clients']> = []
 const QUARTER_SLOT_LABELS = ['季初', '季中', '季末']
 const MONTH_VIEW_OPTIONS: Array<{ key: MonthWorkbenchView; label: string }> = [
   { key: 'dual', label: '双基准' },
@@ -299,8 +288,8 @@ const buildQuarterSummaryMeta = (label: string | null | undefined, pct: number |
   return `对比 ${label} · ${fmtPct(pct)}`
 }
 
-export function Dashboard({ data, loading, onNotify: _onNotify, onRequireAuth }: DashboardProps) {
-  const { stats, trend, top_clients = [] } = data
+export function Dashboard({ data, preferredMonth, loading, onRequireAuth }: DashboardProps) {
+  const { stats, trend, top_clients = EMPTY_TOP_CLIENTS } = data
   const [metric, setMetric] = useState<MetricMode>('consumption')
   const [granularity, setGranularity] = useState<Granularity>('month')
   const [monthWindowSize, setMonthWindowSize] = useState<number>(12)
@@ -311,6 +300,7 @@ export function Dashboard({ data, loading, onNotify: _onNotify, onRequireAuth }:
   const [quarterYear, setQuarterYear] = useState<number>(new Date().getFullYear())
   const [quarterNumber, setQuarterNumber] = useState<number>(1)
   const [quarterWorkbenchView, setQuarterWorkbenchView] = useState<QuarterWorkbenchView>('dual')
+  const monthSelectionModeRef = useRef<'auto' | 'manual'>('auto')
 
   const monthSeries = useMemo<SeriesPoint[]>(() => trend.map((item) => ({
     key: item.month,
@@ -399,18 +389,26 @@ export function Dashboard({ data, loading, onNotify: _onNotify, onRequireAuth }:
     [monthSeries, monthWindowSize],
   )
 
+  const preferredMonthKey = useMemo(() => {
+    if (!monthWindowed.length) return null
+    if (preferredMonth && monthWindowed.some((item) => item.key === preferredMonth)) return preferredMonth
+    if (stats?.month && monthWindowed.some((item) => item.key === stats.month)) return stats.month
+    return null
+  }, [monthWindowed, preferredMonth, stats])
+
   useEffect(() => {
     if (!monthWindowed.length) {
+      monthSelectionModeRef.current = 'auto'
       setActiveMonthKey(null)
       return
     }
-    const fallbackKey = monthWindowed[monthWindowed.length - 1].key
+    const fallbackKey = preferredMonthKey ?? monthWindowed[monthWindowed.length - 1].key
     setActiveMonthKey((current) => (
-      current && monthWindowed.some((item) => item.key === current)
+      monthSelectionModeRef.current === 'manual' && current && monthWindowed.some((item) => item.key === current)
         ? current
         : fallbackKey
     ))
-  }, [monthWindowed])
+  }, [monthWindowed, preferredMonthKey])
 
   const activeMonthPoint = useMemo(() => {
     if (!monthWindowed.length) return null
@@ -453,7 +451,7 @@ export function Dashboard({ data, loading, onNotify: _onNotify, onRequireAuth }:
       .catch(() => undefined)
 
     return () => controller.abort()
-  }, [currentPeriod?.key, granularity, monthCompareMode, onRequireAuth, quarterCompareMode])
+  }, [currentPeriod, granularity, monthCompareMode, onRequireAuth, quarterCompareMode])
 
   const monthTrendData = useMemo<TrendPoint[]>(() => monthWindowed.map((item) => {
     const prevMonth = getPreviousAvailableMonth(item.key, monthKeys)
@@ -583,9 +581,12 @@ export function Dashboard({ data, loading, onNotify: _onNotify, onRequireAuth }:
     })
   }, [metric, monthLookup, qoqQuarterKey, quarterTarget, yoyQuarterKey])
 
-  const monthClients: NormalizedClient[] = activeMonthCompare?.clients?.length
-    ? activeMonthCompare.clients.map((item, index) => ({ ...item, rank: item.rank ?? index + 1 }))
-    : (activeMonthPoint?.key === stats?.month ? top_clients.map((item, index) => ({
+  const monthClients = useMemo<NormalizedClient[]>(() => {
+    if (activeMonthCompare?.clients?.length) {
+      return activeMonthCompare.clients.map((item, index) => ({ ...item, rank: item.rank ?? index + 1 }))
+    }
+    if (activeMonthPoint?.key !== stats?.month) return []
+    return top_clients.map((item, index) => ({
       ...item,
       rank: index + 1,
       prev_consumption: null,
@@ -605,7 +606,8 @@ export function Dashboard({ data, loading, onNotify: _onNotify, onRequireAuth }:
       yoy_delta: null,
       yoy_fee_delta: null,
       yoy_rank_change: null,
-    })) : [])
+    }))
+  }, [activeMonthCompare, activeMonthPoint?.key, stats?.month, top_clients])
 
   const monthTotal = activeMonthPoint
     ? (metric === 'consumption' ? activeMonthPoint.total_consumption : activeMonthPoint.total_service_fee)
@@ -648,7 +650,10 @@ export function Dashboard({ data, loading, onNotify: _onNotify, onRequireAuth }:
   const quarterTotal = quarterTarget
     ? (metric === 'consumption' ? quarterTarget.total_consumption : quarterTarget.total_service_fee)
     : 0
-  const quarterClients = activeQuarterCompare?.clients ?? []
+  const quarterClients = useMemo<CompareClient[]>(
+    () => activeQuarterCompare?.clients ?? [],
+    [activeQuarterCompare],
+  )
   const quarterRows = useMemo<QuarterRow[]>(() => quarterClients.map((item, index) => {
     const curr = metric === 'consumption' ? item.consumption : item.service_fee
     const prevQuarter = metric === 'consumption'
@@ -1035,7 +1040,10 @@ export function Dashboard({ data, loading, onNotify: _onNotify, onRequireAuth }:
               onClick={(event: unknown) => {
                 const payload = (event as { activePayload?: Array<{ payload?: { periodKey?: string } }> } | undefined)?.activePayload
                 const key = payload?.[0]?.payload?.periodKey
-                if (key) setActiveMonthKey(key)
+                if (key) {
+                  monthSelectionModeRef.current = 'manual'
+                  setActiveMonthKey(key)
+                }
               }}
             >
               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E2E8F0" />

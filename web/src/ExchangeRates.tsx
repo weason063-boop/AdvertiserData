@@ -17,6 +17,7 @@ interface Rate {
 interface DailySnapshot {
   rate_date: string
   cny_tt_buy: number
+  eur_tt_buy: number
   usd_tt_sell: number
   jpy_tt_sell: number
   usd_tt_buy: number
@@ -30,9 +31,20 @@ interface DailySnapshotPayload {
   snapshot: DailySnapshot | null
 }
 
+interface SnapshotHistoryItem {
+  date: string
+  cny_tt_buy?: number | null
+  eur_tt_buy?: number | null
+  usd_tt_sell?: number | null
+  jpy_tt_sell?: number | null
+  usd_tt_buy?: number | null
+  pub_time?: string | null
+}
+
 interface SnapshotFormState {
   rateDate: string
   cny_tt_buy: string
+  eur_tt_buy: string
   usd_tt_sell: string
   jpy_tt_sell: string
   usd_tt_buy: string
@@ -43,10 +55,14 @@ function toDateInputValue(date = new Date()): string {
   return local.toISOString().slice(0, 10)
 }
 
+function getErrorMessage(err: unknown, fallback: string): string {
+  return err instanceof Error && err.message ? err.message : fallback
+}
+
 export function ExchangeRates() {
   const [ratesData, setRatesData] = useState<Record<string, Rate[]>>({})
   const [dailySnapshot, setDailySnapshot] = useState<DailySnapshotPayload | null>(null)
-  const [snapshotHistory, setSnapshotHistory] = useState<Array<Record<string, any>>>([])
+  const [snapshotHistory, setSnapshotHistory] = useState<SnapshotHistoryItem[]>([])
 
   const [loading, setLoading] = useState(false)
   const [savingSnapshot, setSavingSnapshot] = useState(false)
@@ -57,6 +73,7 @@ export function ExchangeRates() {
   const [form, setForm] = useState<SnapshotFormState>({
     rateDate: toDateInputValue(),
     cny_tt_buy: '',
+    eur_tt_buy: '',
     usd_tt_sell: '',
     jpy_tt_sell: '',
     usd_tt_buy: '',
@@ -77,6 +94,7 @@ export function ExchangeRates() {
         ...prev,
         rateDate: snapshot.rate_date || data.date || prev.rateDate,
         cny_tt_buy: String(snapshot.cny_tt_buy),
+        eur_tt_buy: String(snapshot.eur_tt_buy ?? ''),
         usd_tt_sell: String(snapshot.usd_tt_sell),
         jpy_tt_sell: String(snapshot.jpy_tt_sell),
         usd_tt_buy: String(snapshot.usd_tt_buy),
@@ -90,7 +108,7 @@ export function ExchangeRates() {
   }
 
   const fetchSnapshotHistory = async () => {
-    const { data } = await apiJson<{ items?: Array<Record<string, any>> }>('/api/exchange-rates/daily-snapshots?limit=14')
+    const { data } = await apiJson<{ items?: SnapshotHistoryItem[] }>('/api/exchange-rates/daily-snapshots?limit=14')
     setSnapshotHistory(Array.isArray(data.items) ? data.items : [])
   }
 
@@ -100,8 +118,8 @@ export function ExchangeRates() {
     try {
       await Promise.all([fetchRates(), fetchDailySnapshot(), fetchSnapshotHistory()])
       setLastUpdated(new Date().toLocaleTimeString())
-    } catch (err: any) {
-      setError(err?.message || '加载汇率信息失败，请稍后重试')
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, '加载汇率信息失败，请稍后重试'))
     } finally {
       setLoading(false)
     }
@@ -118,6 +136,7 @@ export function ExchangeRates() {
     try {
       const payload = {
         cny_tt_buy: Number(form.cny_tt_buy),
+        eur_tt_buy: Number(form.eur_tt_buy),
         usd_tt_sell: Number(form.usd_tt_sell),
         jpy_tt_sell: Number(form.jpy_tt_sell),
         usd_tt_buy: Number(form.usd_tt_buy),
@@ -140,8 +159,8 @@ export function ExchangeRates() {
 
       setSnapshotMessage('✅ 已保存，该日期的账单计算将使用此汇率')
       await Promise.all([fetchRates(), fetchDailySnapshot(), fetchSnapshotHistory()])
-    } catch (err: any) {
-      setSnapshotMessage(err?.message || '保存失败')
+    } catch (err: unknown) {
+      setSnapshotMessage(getErrorMessage(err, '保存失败'))
     } finally {
       setSavingSnapshot(false)
     }
@@ -254,13 +273,14 @@ export function ExchangeRates() {
         {dailySnapshot?.snapshot ? (
           <div className="fx-snapshot-values">
             <div>人民币电汇买入: <strong>{dailySnapshot.snapshot.cny_tt_buy}</strong></div>
+            <div>欧元电汇买入: <strong>{dailySnapshot.snapshot.eur_tt_buy}</strong></div>
             <div>美元电汇卖出: <strong>{dailySnapshot.snapshot.usd_tt_sell}</strong></div>
             <div>日元电汇卖出: <strong>{dailySnapshot.snapshot.jpy_tt_sell}</strong></div>
             <div>美元电汇买入: <strong>{dailySnapshot.snapshot.usd_tt_buy}</strong></div>
             <div>录入时间: <strong>{dailySnapshot.snapshot.pub_time || '-'}</strong></div>
           </div>
         ) : (
-          <div className="fx-snapshot-empty">今日尚未录入汇率，含 RMB/JPY 的账单计算会被阻断，请先录入。</div>
+          <div className="fx-snapshot-empty">今日尚未录入汇率，含 RMB/EUR/JPY 的账单计算会被阻断，请先录入。</div>
         )}
       </div>
 
@@ -282,6 +302,7 @@ export function ExchangeRates() {
           <div className="fx-form-grid">
             <label>日期<input type="date" value={form.rateDate} onChange={(e) => setForm((prev) => ({ ...prev, rateDate: e.target.value }))} /></label>
             <label>CNY 电汇买入<input type="number" min="0" step="0.0001" value={form.cny_tt_buy} onChange={(e) => setForm((prev) => ({ ...prev, cny_tt_buy: e.target.value }))} /></label>
+            <label>EUR 电汇买入<input type="number" min="0" step="0.0001" value={form.eur_tt_buy} onChange={(e) => setForm((prev) => ({ ...prev, eur_tt_buy: e.target.value }))} /></label>
             <label>USD 电汇卖出<input type="number" min="0" step="0.0001" value={form.usd_tt_sell} onChange={(e) => setForm((prev) => ({ ...prev, usd_tt_sell: e.target.value }))} /></label>
             <label>JPY 电汇卖出<input type="number" min="0" step="0.0001" value={form.jpy_tt_sell} onChange={(e) => setForm((prev) => ({ ...prev, jpy_tt_sell: e.target.value }))} /></label>
             <label>USD 电汇买入<input type="number" min="0" step="0.0001" value={form.usd_tt_buy} onChange={(e) => setForm((prev) => ({ ...prev, usd_tt_buy: e.target.value }))} /></label>
@@ -303,6 +324,7 @@ export function ExchangeRates() {
               <tr>
                 <th>日期</th>
                 <th>CNY 买入</th>
+                <th>EUR 买入</th>
                 <th>USD 卖出</th>
                 <th>JPY 卖出</th>
                 <th>USD 买入</th>
@@ -312,7 +334,7 @@ export function ExchangeRates() {
             <tbody>
               {snapshotHistory.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="fx-empty-cell">
+                  <td colSpan={7} className="fx-empty-cell">
                     暂无记录
                   </td>
                 </tr>
@@ -321,6 +343,7 @@ export function ExchangeRates() {
                   <tr key={`${item.date}`}>
                     <td>{item.date || '-'}</td>
                     <td>{item.cny_tt_buy ?? '-'}</td>
+                    <td>{item.eur_tt_buy ?? '-'}</td>
                     <td>{item.usd_tt_sell ?? '-'}</td>
                     <td>{item.jpy_tt_sell ?? '-'}</td>
                     <td>{item.usd_tt_buy ?? '-'}</td>

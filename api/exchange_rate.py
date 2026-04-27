@@ -56,7 +56,7 @@ def _extract_currency_code(currency_text: str) -> str:
     if "RMB" in text:
         return "CNY"
 
-    for code in ("CNY", "USD", "JPY"):
+    for code in ("CNY", "USD", "JPY", "EUR"):
         if code in text:
             return code
     return ""
@@ -81,6 +81,7 @@ def _to_rate_float(value) -> float | None:
 
 def _has_required_hangseng_fields(rows: List[Dict]) -> bool:
     cny_tt_buy = None
+    eur_tt_buy = None
     usd_tt_buy = None
     usd_tt_sell = None
     jpy_tt_sell = None
@@ -91,13 +92,15 @@ def _has_required_hangseng_fields(rows: List[Dict]) -> bool:
         code = _extract_currency_code_from_row(row)
         if code == "CNY":
             cny_tt_buy = _to_rate_float(row.get("tt_buy"))
+        elif code == "EUR":
+            eur_tt_buy = _to_rate_float(row.get("tt_buy"))
         elif code == "USD":
             usd_tt_buy = _to_rate_float(row.get("tt_buy"))
             usd_tt_sell = _to_rate_float(row.get("tt_sell"))
         elif code == "JPY":
             jpy_tt_sell = _to_rate_float(row.get("tt_sell"))
 
-    required = (cny_tt_buy, usd_tt_buy, usd_tt_sell, jpy_tt_sell)
+    required = (cny_tt_buy, eur_tt_buy, usd_tt_buy, usd_tt_sell, jpy_tt_sell)
     return all(value is not None and value > 0 for value in required)
 
 

@@ -48,6 +48,7 @@ def test_upsert_daily_snapshot_requires_billing_permission(client, tmp_path, mon
         "/api/exchange-rates/daily-snapshots/2026-03-16",
         json={
             "cny_tt_buy": 1.1,
+            "eur_tt_buy": 8.9,
             "usd_tt_sell": 7.2,
             "jpy_tt_sell": 0.05,
             "usd_tt_buy": 7.1,
@@ -67,6 +68,7 @@ def test_upsert_daily_snapshot_succeeds_for_billing_user(client, tmp_path, monke
         f"/api/exchange-rates/daily-snapshots/{today}",
         json={
             "cny_tt_buy": 1.1,
+            "eur_tt_buy": 8.9,
             "usd_tt_sell": 7.2,
             "jpy_tt_sell": 0.05,
             "usd_tt_buy": 7.1,
@@ -77,14 +79,18 @@ def test_upsert_daily_snapshot_succeeds_for_billing_user(client, tmp_path, monke
     body = response.json()
     assert body["status"] == "ok"
     assert body["snapshot"]["source"] == "manual"
+    assert body["snapshot"]["eur_tt_buy"] == 8.9
 
     _override_current_user("billing")
     snapshot_response = client.get("/api/exchange-rates/daily-snapshot")
     assert snapshot_response.status_code == 200
     payload = snapshot_response.json()
     assert payload["has_snapshot"] is True
+    assert payload["snapshot"]["eur_tt_buy"] == 8.9
 
     history_response = client.get("/api/exchange-rates/daily-snapshots?limit=5")
     assert history_response.status_code == 200
-    assert len(history_response.json()["items"]) >= 1
+    history_items = history_response.json()["items"]
+    assert len(history_items) >= 1
+    assert history_items[0]["eur_tt_buy"] == 8.9
     _clear_overrides()

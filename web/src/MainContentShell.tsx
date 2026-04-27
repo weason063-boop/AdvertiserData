@@ -3,6 +3,7 @@ import type {
   CalculationResult,
   Client,
   ContractChangeReview,
+  DashboardData,
   OperationAuditLog,
   ResultRow,
   SyncResult,
@@ -26,12 +27,6 @@ type Tab =
   | 'estimateResults'
   | 'rates'
   | 'taskHistory'
-
-interface DashboardData {
-  stats: any
-  trend: any[]
-  top_clients?: any[]
-}
 
 interface MainContentShellProps {
   activeTab: Tab
@@ -57,6 +52,7 @@ interface MainContentShellProps {
   onDownloadResult: () => void
   onDownloadEstimateResult: () => void
   dashboardData: DashboardData
+  preferredDashboardMonth: string | null
   onNotify: (message: string, type: 'info' | 'success' | 'error') => void
   onRequireAuth: () => void
   selectedClientName: string | null
@@ -167,6 +163,7 @@ export function MainContentShell({
   onDownloadResult,
   onDownloadEstimateResult,
   dashboardData,
+  preferredDashboardMonth,
   onNotify,
   onRequireAuth,
   selectedClientName,
@@ -261,6 +258,7 @@ export function MainContentShell({
           {activeTab === 'dashboard' && (
             <Dashboard
               data={dashboardData}
+              preferredMonth={preferredDashboardMonth}
               loading={loading && !dashboardData.stats}
               onNotify={onNotify}
               onRequireAuth={onRequireAuth}

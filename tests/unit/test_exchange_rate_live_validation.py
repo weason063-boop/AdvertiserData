@@ -11,6 +11,7 @@ def _reset_cache():
 def test_has_required_hangseng_fields_complete_payload():
     rows = [
         {"currency": "CNY", "tt_buy": "1.10"},
+        {"currency": "EUR", "tt_buy": "9.10"},
         {"currency": "USD", "tt_buy": "7.70", "tt_sell": "7.80"},
         {"currency": "JPY", "tt_sell": "0.0502"},
     ]
@@ -20,7 +21,17 @@ def test_has_required_hangseng_fields_complete_payload():
 def test_has_required_hangseng_fields_missing_jpy():
     rows = [
         {"currency": "CNY", "tt_buy": "1.10"},
+        {"currency": "EUR", "tt_buy": "9.10"},
         {"currency": "USD", "tt_buy": "7.70", "tt_sell": "7.80"},
+    ]
+    assert exchange_rate._has_required_hangseng_fields(rows) is False
+
+
+def test_has_required_hangseng_fields_missing_eur():
+    rows = [
+        {"currency": "CNY", "tt_buy": "1.10"},
+        {"currency": "USD", "tt_buy": "7.70", "tt_sell": "7.80"},
+        {"currency": "JPY", "tt_sell": "0.0502"},
     ]
     assert exchange_rate._has_required_hangseng_fields(rows) is False
 
@@ -46,6 +57,7 @@ def test_get_hangseng_rates_cache_only_complete_live(monkeypatch):
     _reset_cache()
     complete_live = [
         {"currency": "CNY", "tt_buy": "1.10", "tt_sell": "1.12", "code": "CNY"},
+        {"currency": "EUR", "tt_buy": "9.10", "tt_sell": "9.20", "code": "EUR"},
         {"currency": "USD", "tt_buy": "7.70", "tt_sell": "7.80", "code": "USD"},
         {"currency": "JPY", "tt_buy": "0.0490", "tt_sell": "0.0502", "code": "JPY"},
     ]
@@ -71,6 +83,7 @@ def test_get_hangseng_rates_cache_only_complete_live(monkeypatch):
 def test_has_required_fields_supports_explicit_code_column():
     rows = [
         {"currency": "ANY_A", "code": "CNY", "tt_buy": "1.10"},
+        {"currency": "ANY_E", "code": "EUR", "tt_buy": "9.10"},
         {"currency": "ANY_B", "code": "USD", "tt_buy": "7.70", "tt_sell": "7.80"},
         {"currency": "ANY_C", "code": "JPY", "tt_sell": "0.0502"},
     ]

@@ -5,7 +5,7 @@ import {
   extractRoleFromToken,
   extractUsernameFromToken,
 } from './authTokenUtils'
-import type { CalculationResult, Client, ContractChangeReview, SyncResult } from './billingTypes'
+import type { CalculationResult, Client, ContractChangeReview, DashboardData, SyncResult } from './billingTypes'
 import { LoginModal } from './LoginModal'
 import { MainContentShell } from './MainContentShell'
 import { SidebarNav } from './SidebarNav'
@@ -35,6 +35,61 @@ type Tab =
   | 'taskHistory'
 
 const ACTIVE_TAB_STORAGE_KEY = 'billing_active_tab'
+
+const normalizeMonthText = (value: unknown): string | null => {
+  const text = String(value || '').trim()
+  if (!text) return null
+
+  const zhMatch = text.match(/(20\d{2})年\s*(\d{1,2})月/)
+  if (zhMatch) {
+    const year = Number(zhMatch[1])
+    const month = Number(zhMatch[2])
+    if (month >= 1 && month <= 12) return `${year}-${String(month).padStart(2, '0')}`
+  }
+
+  const sepMatch = text.match(/(?:^|[_\-\s.]|T)(20\d{2})[._\-/\s](\d{1,2})(?:[^0-9]|$)/)
+  if (sepMatch) {
+    const year = Number(sepMatch[1])
+    const month = Number(sepMatch[2])
+    if (month >= 1 && month <= 12) return `${year}-${String(month).padStart(2, '0')}`
+  }
+
+  return null
+}
+
+const isResultMonthField = (key: unknown): boolean => {
+  const normalizedKey = String(key || '').trim().toLowerCase()
+  return normalizedKey.includes('月份')
+    || normalizedKey.includes('month')
+    || normalizedKey.includes('账期')
+    || normalizedKey.includes('来源sheet')
+    || normalizedKey.includes('source sheet')
+    || normalizedKey.includes('sheetname')
+}
+
+const extractMonthFromResultData = (result: CalculationResult | null): string | null => {
+  if (!result?.data?.length) return null
+
+  const monthSet = new Set<string>()
+  result.data.forEach((row) => {
+    Object.entries(row).forEach(([key, value]) => {
+      const monthFromKey = normalizeMonthText(key)
+      if (monthFromKey) {
+        monthSet.add(monthFromKey)
+      }
+
+      if (!isResultMonthField(key)) return
+
+      const monthFromValue = normalizeMonthText(value)
+      if (monthFromValue) {
+        monthSet.add(monthFromValue)
+      }
+    })
+  })
+
+  if (!monthSet.size) return null
+  return [...monthSet].sort().at(-1) ?? null
+}
 
 const isTab = (value: string | null): value is Tab =>
   value === 'dashboard' ||
@@ -92,7 +147,7 @@ function App() {
   const [estimateResultsPage, setEstimateResultsPage] = useState(1)
   const [estimateResultsPageSize, setEstimateResultsPageSize] = useState(100)
 
-  const [dashboardData, setDashboardData] = useState<{ stats: any; trend: any[]; top_clients?: any[] }>({
+  const [dashboardData, setDashboardData] = useState<DashboardData>({
     stats: null,
     trend: [],
   })
@@ -105,6 +160,10 @@ function App() {
 
   const [syncResult, setSyncResult] = useState<SyncResult | null>(null)
   const [contractChangeReviews, setContractChangeReviews] = useState<ContractChangeReview[]>([])
+  const latestBillingResultMonth = useMemo(
+    () => extractMonthFromResultData(results),
+    [results],
+  )
 
   // Auth State
   const [isAuthenticated, setIsAuthenticated] = useState(() => !!localStorage.getItem('token'))
@@ -347,7 +406,7 @@ function App() {
 
   const loadDashboard = async () => {
     try {
-      const { data } = await apiJson<{ stats: any; trend: any[] }>('/api/dashboard')
+      const { data } = await apiJson<DashboardData>('/api/dashboard')
       setDashboardData(data)
     } catch (error: unknown) {
       if (isApiHttpError(error) && error.status === 401) {
@@ -454,6 +513,7 @@ function App() {
     loadDashboard()
     loadLatestResult()
     loadLatestEstimateResult()
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- bootstrap should only rerun when auth state changes
   }, [isAuthenticated])
 
   useEffect(() => {
@@ -463,6 +523,7 @@ function App() {
       void loadContractChangeReviews(search)
     }, 250)
     return () => window.clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- debounce is driven by the visible clients search state
   }, [search, activeTab, isAuthenticated])
 
   useEffect(() => {
@@ -473,7 +534,7 @@ function App() {
     if (!isAuthenticated) return
     if (activeTab !== 'taskHistory') return
     if (isAdminRole(currentRole)) return
-    setActiveTab(Boolean(results) ? 'results' : 'dashboard')
+    setActiveTab(results ? 'results' : 'dashboard')
     setToastMessage('任务历史仅管理员可查看')
     setToastType('error')
   }, [activeTab, currentRole, isAuthenticated, results])
@@ -483,6 +544,7 @@ function App() {
       loadDashboard()
       setIsDashboardStale(false)
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- dashboard refresh is gated by the stale flag
   }, [activeTab, isDashboardStale, isAuthenticated])
 
   useEffect(() => {
@@ -1273,6 +1335,7 @@ function App() {
         onDownloadResult={downloadResult}
         onDownloadEstimateResult={downloadEstimateResult}
         dashboardData={dashboardData}
+        preferredDashboardMonth={latestBillingResultMonth}
         onNotify={(message, type) => {
           setToastMessage(message)
           setToastType(type)

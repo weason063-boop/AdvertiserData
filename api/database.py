@@ -339,6 +339,35 @@ def upsert_client_stats_batch(month: str, stats: List[Dict], db: Session = None)
         if should_close:
             db.close()
 
+
+def replace_client_stats_batch(month: str, stats: List[Dict], db: Session = None):
+    """按月份整批替换客户月度统计，避免重算后残留旧客户数据。"""
+    should_close = False
+    if db is None:
+        db = SessionLocal()
+        should_close = True
+    try:
+        db.query(ClientMonthlyStats).filter(
+            ClientMonthlyStats.month == month
+        ).delete(synchronize_session=False)
+
+        for s in stats:
+            client_name = str(s.get("name") or "").strip()
+            if not client_name:
+                continue
+            db.add(
+                ClientMonthlyStats(
+                    month=month,
+                    client_name=client_name,
+                    consumption=float(s.get("consumption") or 0.0),
+                    service_fee=float(s.get("fee") or 0.0),
+                )
+            )
+        db.commit()
+    finally:
+        if should_close:
+            db.close()
+
 def get_top_clients(month: str, limit: int = 20, db: Session = None) -> List[Dict]:
     """获取某月消耗排名前N的客户"""
     should_close = False
@@ -445,6 +474,17 @@ def _normalize_review_value(value: Any) -> Optional[str]:
     return text_value if text_value else None
 
 
+def _review_looks_like_new_client(review_record: ClientContractChangeReview) -> bool:
+    current_values = (
+        review_record.current_business_type,
+        review_record.current_department,
+        review_record.current_entity,
+        review_record.current_fee_clause,
+        review_record.current_payment_term,
+    )
+    return all(_normalize_review_value(value) is None for value in current_values)
+
+
 def _serialize_contract_change_review(record: ClientContractChangeReview) -> Dict[str, Any]:
     try:
         change_fields = json.loads(record.change_fields_json or "[]")
@@ -497,6 +537,8 @@ def list_contract_change_reviews(search: str = None, db: Session = None) -> List
 
 def _apply_review_to_client_record(client_record: Client, review_record: ClientContractChangeReview) -> None:
     client_record.business_type = _normalize_review_value(review_record.new_business_type)
+    if _review_looks_like_new_client(review_record):
+        client_record.department = _normalize_review_value(review_record.new_department)
     client_record.entity = _normalize_review_value(review_record.new_entity)
     client_record.fee_clause = _normalize_review_value(review_record.new_fee_clause)
     client_record.payment_term = _normalize_review_value(review_record.new_payment_term)
@@ -750,6 +792,43 @@ def upsert_client_detail_stats_batch(month: str, stats: List[Dict], db: Session 
                         **payload,
                     )
                 )
+        db.commit()
+    finally:
+        if should_close:
+            db.close()
+
+
+def replace_client_detail_stats_batch(month: str, stats: List[Dict], db: Session = None):
+    """按月份整批替换客户月度明细统计，避免重算后残留旧客户数据。"""
+    should_close = False
+    if db is None:
+        db = SessionLocal()
+        should_close = True
+    try:
+        db.query(ClientMonthlyDetailStats).filter(
+            ClientMonthlyDetailStats.month == month
+        ).delete(synchronize_session=False)
+
+        for s in stats:
+            client_name = str(s.get("name") or "").strip()
+            if not client_name:
+                continue
+            db.add(
+                ClientMonthlyDetailStats(
+                    month=month,
+                    client_name=client_name,
+                    bill_type=str(s.get("bill_type") or "—").strip() or "—",
+                    service_type=str(s.get("service_type") or "—").strip() or "—",
+                    flow_consumption=float(s.get("flow_consumption") or 0.0),
+                    managed_consumption=float(s.get("managed_consumption") or 0.0),
+                    net_consumption=float(s.get("net_consumption") or 0.0),
+                    service_fee=float(s.get("service_fee") or 0.0),
+                    fixed_service_fee=float(s.get("fixed_service_fee") or 0.0),
+                    coupon=float(s.get("coupon") or 0.0),
+                    dst=float(s.get("dst") or 0.0),
+                    total=float(s.get("total") or 0.0),
+                )
+            )
         db.commit()
     finally:
         if should_close:

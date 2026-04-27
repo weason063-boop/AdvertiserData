@@ -20,10 +20,11 @@ from sqlalchemy.orm import Session
 
 from api.database import (
     record_operation_audit,
+    replace_client_detail_stats_batch,
+    replace_client_stats_batch,
     upsert_billing_history,
-    upsert_client_detail_stats_batch,
-    upsert_client_stats_batch,
 )
+from api.models import BillingHistory, ClientMonthlyDetailStats, ClientMonthlyStats
 from api.services.daily_fx_snapshot_service import DailyFxSnapshotService
 from calculate_service_fee import calculate_service_fees
 
@@ -87,13 +88,17 @@ class CalculationService:
     _ESTIMATE_RESULT_OPERATIONS = {"estimate_calculate", "estimate_recalculate"}
     _ESTIMATE_SHEET_NAME = "Sheet1"
     _ESTIMATE_OUTPUT_SHEET_NAME = "Sheet2"
+    _RESULT_DATA_SHEET_NAME = "_CALC_DATA"
+    _NET_CONSUMPTION_COLUMN_CANDIDATES = ("汇总纯花费", "汇总纯消耗", "账单汇总")
+    _VISIBLE_CONSUMPTION_COLUMN_CANDIDATES = ("代投消耗", "流水消耗", "账单汇总", "代投/咨询拆分", "流水拆分")
+    _CLIENT_ACCOUNT_SHEET_MARKERS = ("客户端口账户代投", "客户端口代投")
     _ESTIMATE_REQUIRED_COLUMNS = ("媒介", "投放类型", "母公司")
 
     def __init__(self, daily_fx_snapshot_service: DailyFxSnapshotService | None = None):
         self._daily_fx_snapshot_service = daily_fx_snapshot_service or DailyFxSnapshotService()
         self._result_registry_lock = threading.Lock()
         self._detail_backfill_lock = threading.Lock()
-        self._detail_backfill_signature: tuple[tuple[str, int, int], ...] | None = None
+        self._detail_backfill_signature: tuple[tuple[str, int, int, str], ...] | None = None
 
     def _audit(
         self,
@@ -160,19 +165,66 @@ class CalculationService:
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"{context}无法读取为 Excel: {exc}") from exc
 
+    def _extract_client_account_month(self, column_name) -> str | None:
+        text = str(column_name or "").strip()
+        if not text or "消耗" not in text:
+            return None
+        return self._parse_month_from_filename(text)
+
+    def _is_client_account_sheet_name(self, sheet_name: str) -> bool:
+        text = str(sheet_name or "")
+        return any(marker in text for marker in self._CLIENT_ACCOUNT_SHEET_MARKERS)
+
+    def _is_client_account_managed_sheet(self, sheet_name: str, columns: list[str] | set[str]) -> bool:
+        if not self._is_client_account_sheet_name(sheet_name):
+            return False
+
+        column_list = [str(column).strip() for column in columns]
+        column_set = set(column_list)
+        if not {"母公司", "媒介"}.issubset(column_set):
+            return False
+
+        return any(self._extract_client_account_month(column_name) for column_name in column_list)
+
+    def _find_client_account_month_column(self, columns: list[str] | set[str], target_month: str | None) -> str | None:
+        if not target_month:
+            return None
+
+        for column_name in columns:
+            if self._extract_client_account_month(column_name) == target_month:
+                return str(column_name)
+        return None
+
     def _validate_consumption_workbook(self, file_path: str, original_filename: str) -> None:
         workbook = self._open_excel_workbook(file_path, context="消耗上传文件")
+        target_month = self._parse_month_from_filename(original_filename)
         try:
             valid_sheets = []
             missing_service_type = []
             missing_currency = []
+            missing_target_month = []
             has_month_column = False
             has_consumption_column = False
 
             for sheet in workbook.sheet_names:
                 header_df = pd.read_excel(workbook, sheet_name=sheet, nrows=0)
-                cols = set(header_df.columns.tolist())
+                columns = [str(col).strip() for col in header_df.columns.tolist()]
+                cols = set(columns)
+                if any(candidate in cols for candidate in self._VISIBLE_CONSUMPTION_COLUMN_CANDIDATES):
+                    has_consumption_column = True
                 if not {"母公司", "媒介"}.issubset(cols):
+                    continue
+
+                if self._is_client_account_managed_sheet(sheet, columns):
+                    valid_sheets.append(sheet)
+                    has_consumption_column = True
+
+                    if "币种" not in cols:
+                        missing_currency.append(sheet)
+
+                    month_column = self._find_client_account_month_column(columns, target_month)
+                    if not target_month or not month_column:
+                        missing_target_month.append(sheet)
                     continue
 
                 if "服务类型" not in cols:
@@ -199,10 +251,25 @@ class CalculationService:
                 hint = "、".join(missing_currency[:3])
                 raise HTTPException(status_code=400, detail=f"模板缺少必需列“币种”，问题 Sheet: {hint}")
 
+            if missing_target_month:
+                hint = "、".join(missing_target_month[:3])
+                if not target_month:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "文件名缺少月份，无法识别“客户端口账户代投”Sheet 的目标消耗列，"
+                            f"请使用 YYYY-MM 或 YYYY年M月 命名，问题 Sheet: {hint}"
+                        ),
+                    )
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"“客户端口账户代投”Sheet 未找到与文件月份 {target_month} 匹配的消耗列，问题 Sheet: {hint}",
+                )
+
             if not valid_sheets:
                 raise HTTPException(
                     status_code=400,
-                    detail="未找到有效消耗数据 Sheet（至少包含 母公司/媒介/服务类型 列）",
+                    detail="未找到有效消耗数据 Sheet（至少包含 母公司/媒介/服务类型 列，或有效的“客户端口账户代投”Sheet）",
                 )
 
             if not has_consumption_column:
@@ -658,6 +725,66 @@ class CalculationService:
             raise HTTPException(status_code=404, detail=f"文件不存在: {safe_filename}")
         return file_path
 
+    def _is_legacy_dashboard_result_filename(self, filename: str) -> bool:
+        normalized = str(filename or "").strip().lower()
+        if "estimate_results" in normalized:
+            return False
+        if "recalc_input_results" in normalized:
+            return False
+        return self._is_allowed_result_filename(secure_filename(filename))
+
+    def _get_dashboard_result_entries(self) -> list[dict[str, Any]]:
+        upload_dir = self._get_upload_dir()
+        with self._result_registry_lock:
+            state = self._load_result_registry_unlocked()
+            records = self._prune_result_records(state.get("records", []))
+            state["records"] = records
+            self._save_result_registry_unlocked(state)
+
+        latest_record_by_filename: dict[str, dict[str, Any]] = {}
+        for record in records:
+            operation = str(record.get("operation") or "calculate").strip() or "calculate"
+            if operation not in self._DEFAULT_RESULT_OPERATIONS:
+                continue
+
+            filename = secure_filename(str(record.get("filename") or ""))
+            if not filename:
+                continue
+
+            file_path = upload_dir / filename
+            if not file_path.exists() or not file_path.is_file():
+                continue
+
+            latest_record_by_filename[filename] = {
+                "filename": filename,
+                "path": file_path,
+                "source_file": str(record.get("source_file") or ""),
+                "created_at": str(record.get("created_at") or ""),
+            }
+
+        if latest_record_by_filename:
+            return sorted(
+                latest_record_by_filename.values(),
+                key=lambda item: (str(item.get("created_at") or ""), str(item.get("filename") or "")),
+            )
+
+        legacy_entries: list[dict[str, Any]] = []
+        for path in sorted(
+            upload_dir.glob("*_results.xlsx"),
+            key=lambda item: (item.stat().st_mtime_ns, item.name),
+        ):
+            if not self._is_legacy_dashboard_result_filename(path.name):
+                continue
+            legacy_entries.append(
+                {
+                    "filename": path.name,
+                    "path": path,
+                    "source_file": "",
+                    "created_at": "",
+                }
+            )
+        return legacy_entries
+
     def list_result_files(self) -> list[Path]:
         upload_dir = self._get_upload_dir()
         return [path for path in upload_dir.glob("*_results.xlsx") if self._is_allowed_result_filename(path.name)]
@@ -716,6 +843,8 @@ class CalculationService:
         name = str(sheet_name or "").strip().lower().replace(" ", "")
         if any(x in name for x in ("jpy", "日元", "日币")):
             return "JPY"
+        if any(x in name for x in ("eur", "欧元")):
+            return "EUR"
         if any(x in name for x in ("rmb", "cny", "人民币")):
             return "RMB"
         if any(x in name for x in ("usd", "美元", "美金", "us$")):
@@ -728,14 +857,53 @@ class CalculationService:
         text = str(value or "").strip().upper()
         if text in {"CNY", "RMB", "人民币", "RENMINBI"}:
             return "RMB"
+        if text in {"EUR", "欧元"}:
+            return "EUR"
         if text in {"JPY", "日元", "日币"}:
             return "JPY"
         if text in {"USD", "美元", "美金"}:
             return "USD"
         return text
 
-    def _contains_currency_consumption(self, file_path: str, target_currencies: set[str]) -> bool:
-        workbook = pd.ExcelFile(file_path)
+    def _match_currency_hint(self, value) -> str:
+        text = str(value or "").strip().upper().replace(" ", "")
+        if not text:
+            return ""
+        if any(token in text for token in ("CNY", "RMB", "人民币", "RENMINBI")):
+            return "RMB"
+        if any(token in text for token in ("EUR", "欧元")):
+            return "EUR"
+        if any(token in text for token in ("JPY", "日元", "日币", "日圆")):
+            return "JPY"
+        if any(token in text for token in ("USD", "US$", "美元", "美金")):
+            return "USD"
+        return ""
+
+    def _infer_client_account_currency(self, row: pd.Series) -> str:
+        explicit_raw = row.get("币种")
+        explicit_hint = self._match_currency_hint(explicit_raw)
+        if explicit_hint:
+            return explicit_hint
+
+        explicit = self._normalize_currency_value(explicit_raw)
+        if explicit:
+            return explicit
+
+        for column_name in ("渠道", "媒介", "母公司", "帐号 ID", "账号 ID", "账号ID"):
+            hinted = self._match_currency_hint(row.get(column_name))
+            if hinted:
+                return hinted
+
+        return "USD"
+
+    def _contains_currency_consumption(
+        self,
+        file_path: str,
+        target_currencies: set[str],
+        *,
+        month_hint: str | None = None,
+    ) -> bool:
+        workbook = self._open_excel_workbook(file_path, context="消耗上传文件")
         required_cols = {"母公司", "媒介", "服务类型"}
         normalized_targets = {self._normalize_currency_value(item) for item in target_currencies}
         try:
@@ -743,16 +911,32 @@ class CalculationService:
                 df = pd.read_excel(workbook, sheet_name=sheet)
                 if df.empty:
                     continue
-                if not required_cols.issubset(set(df.columns.tolist())):
+
+                columns = [str(col).strip() for col in df.columns.tolist()]
+                cols = set(columns)
+                if self._is_client_account_managed_sheet(sheet, columns):
+                    if "币种" not in cols:
+                        raise HTTPException(status_code=400, detail="‘客户端口账户代投’Sheet 缺少‘币种’列")
+                    month_column = self._find_client_account_month_column(columns, month_hint)
+                    if not month_column:
+                        continue
+                    currency_series = df.apply(self._infer_client_account_currency, axis=1)
+                    consumption_series = pd.to_numeric(df[month_column], errors="coerce").fillna(0.0)
+                    active_currency_series = currency_series[consumption_series.abs() > 1e-9]
+                    if active_currency_series.isin(normalized_targets).any():
+                        return True
+                    continue
+
+                if not required_cols.issubset(cols):
                     continue
 
                 sheet_currency = self._normalize_sheet_currency(sheet)
                 if sheet_currency and sheet_currency in normalized_targets:
                     return True
-                if sheet_currency in {"USD", "RMB", "JPY"}:
+                if sheet_currency in {"USD", "RMB", "JPY", "EUR"}:
                     continue
 
-                if "币种" not in df.columns:
+                if "币种" not in cols:
                     if sheet_currency == "OTHER":
                         raise HTTPException(status_code=400, detail="‘其他币种’Sheet 缺少‘币种’列")
                     continue
@@ -765,11 +949,14 @@ class CalculationService:
         finally:
             workbook.close()
 
-    def _contains_rmb_consumption(self, file_path: str) -> bool:
-        return self._contains_currency_consumption(file_path, {"RMB"})
+    def _contains_rmb_consumption(self, file_path: str, *, month_hint: str | None = None) -> bool:
+        return self._contains_currency_consumption(file_path, {"RMB"}, month_hint=month_hint)
 
-    def _contains_jpy_consumption(self, file_path: str) -> bool:
-        return self._contains_currency_consumption(file_path, {"JPY"})
+    def _contains_eur_consumption(self, file_path: str, *, month_hint: str | None = None) -> bool:
+        return self._contains_currency_consumption(file_path, {"EUR"}, month_hint=month_hint)
+
+    def _contains_jpy_consumption(self, file_path: str, *, month_hint: str | None = None) -> bool:
+        return self._contains_currency_consumption(file_path, {"JPY"}, month_hint=month_hint)
 
     def _build_daily_exchange_context(self, require_snapshot: bool) -> dict:
         today_snapshot = self._daily_fx_snapshot_service.get_today_snapshot()
@@ -777,7 +964,7 @@ class CalculationService:
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "检测到 RMB 或 JPY 消耗，但今日恒生汇率快照尚未生效。"
+                    "检测到 RMB、EUR 或 JPY 消耗，但今日恒生汇率快照尚未生效。"
                     "请先前往“汇率监控”页面补录今日快照，再重新计算。"
                 ),
             )
@@ -863,12 +1050,13 @@ class CalculationService:
     def _looks_like_consumption_file(self, file_path: Path) -> bool:
         try:
             required_cols = {"母公司", "媒介", "服务类型"}
-            workbook = pd.ExcelFile(file_path)
+            workbook = self._open_excel_workbook(str(file_path), context="消耗上传文件")
             try:
                 for sheet in workbook.sheet_names:
                     header_df = pd.read_excel(workbook, sheet_name=sheet, nrows=0)
-                    cols = set(header_df.columns.tolist())
-                    if required_cols.issubset(cols):
+                    columns = [str(col).strip() for col in header_df.columns.tolist()]
+                    cols = set(columns)
+                    if required_cols.issubset(cols) or self._is_client_account_managed_sheet(sheet, columns):
                         return True
                 return False
             finally:
@@ -1094,10 +1282,11 @@ class CalculationService:
 
         if exchange_context is None:
             if require_fx_snapshot:
-                has_rmb_rows = self._contains_rmb_consumption(file_path)
-                has_jpy_rows = self._contains_jpy_consumption(file_path)
+                has_rmb_rows = self._contains_rmb_consumption(file_path, month_hint=month_hint)
+                has_eur_rows = self._contains_eur_consumption(file_path, month_hint=month_hint)
+                has_jpy_rows = self._contains_jpy_consumption(file_path, month_hint=month_hint)
                 exchange_context = self._build_daily_exchange_context(
-                    require_snapshot=has_rmb_rows or has_jpy_rows
+                    require_snapshot=has_rmb_rows or has_eur_rows or has_jpy_rows
                 )
             else:
                 exchange_context = {"hangseng_today": {}}
@@ -1357,25 +1546,42 @@ class CalculationService:
             return _fmt_month(int(dt.year), int(dt.month))
         return None
 
-    def _parse_month_from_filename(self, filename: str) -> str | None:
+    def _parse_month_from_filename(self, filename: str, *, prefer_latest_match: bool = False) -> str | None:
         patterns = [
             r"(\d{4})[._\-\s]?(\d{1,2})",  # 2024.01 / 2024-01 / 2024 01
             r"(\d{4})年\s*(\d{1,2})月",      # 2024年1月
             r"(20\d{2})(\d{2})",            # 202401
         ]
 
+        selected_match: str | None = None
+        selected_start = -1
+        selected_end = -1
         for pattern in patterns:
-            match = re.search(pattern, filename)
-            if not match:
-                continue
-            try:
-                year = int(match.group(1))
-                month = int(match.group(2))
-            except ValueError:
-                continue
-            if 2000 <= year <= 2099 and 1 <= month <= 12:
-                return f"{year}-{month:02d}"
-        return None
+            for match in re.finditer(pattern, filename):
+                try:
+                    year = int(match.group(1))
+                    month = int(match.group(2))
+                except ValueError:
+                    continue
+                if 2000 <= year <= 2099 and 1 <= month <= 12:
+                    match_value = f"{year}-{month:02d}"
+                    match_start = match.start()
+                    match_end = match.end()
+                    if selected_match is None:
+                        selected_match = match_value
+                        selected_start = match_start
+                        selected_end = match_end
+                        continue
+                    if prefer_latest_match:
+                        if (match_end, match_start) >= (selected_end, selected_start):
+                            selected_match = match_value
+                            selected_start = match_start
+                            selected_end = match_end
+                    elif (match_start, match_end) <= (selected_start, selected_end):
+                        selected_match = match_value
+                        selected_start = match_start
+                        selected_end = match_end
+        return selected_match
 
     def _to_numeric_series(self, df: pd.DataFrame, column_name: str | None) -> pd.Series:
         if not column_name or column_name not in df.columns:
@@ -1487,13 +1693,179 @@ class CalculationService:
                 return column_name
         return None
 
+    def _build_client_account_result_column_names(self, month_column: str) -> tuple[str, str, str, str]:
+        text = str(month_column or "").strip()
+        if "消耗" in text:
+            prefix = text.replace("消耗", "", 1)
+        else:
+            prefix = text
+        return (
+            f"{prefix}服务费",
+            f"{prefix}固定服务费",
+            f"{prefix}换汇汇率",
+            f"{prefix}换汇后消耗USD",
+        )
+
+    def _expand_client_account_result_sheet(self, df_sheet: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
+        if df_sheet.empty or not self._is_client_account_sheet_name(sheet_name):
+            return pd.DataFrame()
+
+        currency_series = df_sheet.apply(self._infer_client_account_currency, axis=1)
+        frames: list[pd.DataFrame] = []
+
+        for column_name in df_sheet.columns:
+            month_key = self._extract_client_account_month(column_name)
+            if not month_key:
+                continue
+
+            service_col, fixed_col, fx_col, usd_col = self._build_client_account_result_column_names(str(column_name))
+            if not any(col in df_sheet.columns for col in (service_col, fixed_col, fx_col, usd_col)):
+                continue
+
+            consumption_series = self._to_numeric_series(df_sheet, str(column_name))
+            service_series = self._to_numeric_series(df_sheet, service_col)
+            fixed_series = self._to_numeric_series(df_sheet, fixed_col)
+            fx_series = (
+                pd.to_numeric(df_sheet[fx_col], errors="coerce")
+                if fx_col in df_sheet.columns
+                else pd.Series(float("nan"), index=df_sheet.index, dtype="float64")
+            )
+            usd_series = (
+                pd.to_numeric(df_sheet[usd_col], errors="coerce")
+                if usd_col in df_sheet.columns
+                else pd.Series(float("nan"), index=df_sheet.index, dtype="float64")
+            )
+
+            managed_usd_series = usd_series.fillna(0.0)
+            use_original_mask = managed_usd_series.abs() < 1e-9
+            managed_usd_series.loc[use_original_mask] = consumption_series.loc[use_original_mask]
+
+            needs_conversion_mask = (
+                currency_series.isin({"RMB", "JPY", "EUR"})
+                & use_original_mask
+                & fx_series.notna()
+                & (fx_series.abs() >= 1e-9)
+            )
+            managed_usd_series.loc[needs_conversion_mask] = (
+                consumption_series.loc[needs_conversion_mask] * fx_series.loc[needs_conversion_mask]
+            )
+
+            active_mask = (
+                (consumption_series.abs() >= 1e-9)
+                | (service_series.abs() >= 1e-9)
+                | (fixed_series.abs() >= 1e-9)
+                | (managed_usd_series.abs() >= 1e-9)
+            )
+            if not bool(active_mask.any()):
+                continue
+
+            frame = pd.DataFrame(
+                {
+                    "母公司": df_sheet.get("母公司"),
+                    "媒介": df_sheet.get("媒介"),
+                    "币种": currency_series,
+                    "服务类型": "代投",
+                    "代投消耗": managed_usd_series,
+                    "流水消耗": 0.0,
+                    "汇总纯花费": managed_usd_series,
+                    "服务费": service_series,
+                    "固定服务费": fixed_series,
+                    "换汇汇率": fx_series.where(fx_series.abs() >= 1e-9, 1.0),
+                    "月份归属": month_key,
+                    "来源Sheet": sheet_name,
+                }
+            )
+            if "预付/后付" in df_sheet.columns:
+                frame["预付/后付"] = df_sheet["预付/后付"]
+            frames.append(frame.loc[active_mask].copy())
+
+        if not frames:
+            return pd.DataFrame()
+        return pd.concat(frames, ignore_index=True, sort=False)
+
+    def _load_visible_result_workbook_dataframe(
+        self,
+        result_source: str | Path,
+        sheet_names: list[str],
+    ) -> pd.DataFrame:
+        frames: list[pd.DataFrame] = []
+        for sheet_name in sheet_names:
+            if sheet_name == self._RESULT_DATA_SHEET_NAME:
+                continue
+
+            df_sheet = pd.read_excel(result_source, sheet_name=sheet_name)
+            if df_sheet.empty:
+                continue
+
+            if self._is_client_account_sheet_name(sheet_name):
+                expanded_df = self._expand_client_account_result_sheet(df_sheet, sheet_name)
+                if not expanded_df.empty:
+                    frames.append(expanded_df)
+                continue
+
+            columns = {str(col).strip() for col in df_sheet.columns.tolist()}
+            if not {"母公司", "媒介"}.issubset(columns):
+                continue
+            frames.append(df_sheet.copy())
+
+        if not frames:
+            return pd.DataFrame()
+        return pd.concat(frames, ignore_index=True, sort=False)
+
+    def _load_result_dataframe_with_context(
+        self,
+        result_source: str | Path | pd.DataFrame,
+        *,
+        operation: str | None = None,
+    ) -> tuple[pd.DataFrame, str]:
+        if isinstance(result_source, pd.DataFrame):
+            return result_source.copy(), "dataframe"
+
+        sheet_name: str | int = 0
+        sheet_names: list[str] = []
+        use_visible_workbook_fallback = False
+        load_mode = "single_sheet"
+        workbook = self._open_excel_workbook(str(result_source), context="计算结果文件")
+        try:
+            sheet_names = list(workbook.sheet_names)
+            if operation in self._ESTIMATE_RESULT_OPERATIONS:
+                if self._ESTIMATE_OUTPUT_SHEET_NAME in workbook.sheet_names:
+                    sheet_name = self._ESTIMATE_OUTPUT_SHEET_NAME
+            elif self._RESULT_DATA_SHEET_NAME in workbook.sheet_names:
+                sheet_name = self._RESULT_DATA_SHEET_NAME
+                load_mode = "calc_data_sheet"
+            elif len(workbook.sheet_names) > 1:
+                use_visible_workbook_fallback = True
+                load_mode = "visible_multi_sheet"
+        finally:
+            workbook.close()
+
+        if use_visible_workbook_fallback:
+            return self._load_visible_result_workbook_dataframe(result_source, sheet_names), load_mode
+        return pd.read_excel(result_source, sheet_name=sheet_name), load_mode
+
+    def _load_result_dataframe(
+        self,
+        result_source: str | Path | pd.DataFrame,
+        *,
+        operation: str | None = None,
+    ) -> pd.DataFrame:
+        df, _ = self._load_result_dataframe_with_context(result_source, operation=operation)
+        return df
+
     def _prepare_result_month_batches(
         self,
         filename: str,
         result_source: str | Path | pd.DataFrame,
+        *,
+        filename_month: str | None = None,
     ) -> list[tuple[str, pd.DataFrame]]:
-        result_df = result_source.copy() if isinstance(result_source, pd.DataFrame) else pd.read_excel(result_source)
-        month_str = self._parse_month_from_filename(filename)
+        result_df, load_mode = self._load_result_dataframe_with_context(result_source)
+        month_str = (
+            filename_month
+            if filename_month and self._is_valid_month_string(filename_month)
+            else self._parse_month_from_filename(filename)
+        )
 
         normalized_df = self._standardize_result_headers(result_df.copy())
         normalized_df["_client_name"] = (
@@ -1549,11 +1921,35 @@ class CalculationService:
 
         months_to_process: list[tuple[str, pd.DataFrame]] = []
         has_month_col = False
+        prefer_filename_month = (
+            load_mode in {"calc_data_sheet", "visible_multi_sheet"}
+            and bool(month_str)
+            and self._is_valid_month_string(month_str)
+        )
 
         if "月份归属" in normalized_df.columns and not normalized_df["月份归属"].isnull().all():
             has_month_col = True
             try:
                 normalized_df["_month"] = normalized_df["月份归属"].apply(self._normalize_month_value)
+                if prefer_filename_month:
+                    monthly_df = normalized_df[
+                        normalized_df["_month"].isna() | (normalized_df["_month"] == month_str)
+                    ].copy()
+                    dropped_other_month_count = int(len(normalized_df) - len(monthly_df))
+                    if monthly_df.empty:
+                        monthly_df = normalized_df.copy()
+                        dropped_other_month_count = 0
+                    monthly_df["_month"] = month_str
+                    if dropped_other_month_count:
+                        logger.info(
+                            "结果文件 %s 按文件月份 %s 回填，已忽略 %s 行其他月份数据",
+                            filename,
+                            month_str,
+                            dropped_other_month_count,
+                        )
+                    months_to_process.append((month_str, monthly_df))
+                    return months_to_process
+
                 valid_date_df = normalized_df.dropna(subset=["_month"])
 
                 if not valid_date_df.empty:
@@ -1621,6 +2017,8 @@ class CalculationService:
             raise last_exc
 
     def _upsert_monthly_stats(self, month: str, df: pd.DataFrame, db: Session | None = None):
+        stats_list: list[dict[str, float | str]] = []
+        detail_stats_list: list[dict[str, float | str]] = []
         if "_client_name" in df.columns:
             client_stats = df.groupby("_client_name")[["_temp_consumption", "_temp_fee"]].sum().reset_index()
             client_stats = client_stats[(client_stats["_temp_consumption"] != 0) | (client_stats["_temp_fee"] != 0)]
@@ -1634,57 +2032,98 @@ class CalculationService:
                 for _, row in client_stats.iterrows()
                 if pd.notna(row["_client_name"]) and str(row["_client_name"]).strip()
             ]
-            upsert_client_stats_batch(month, stats_list, db=db)
 
-            detail_stats_list = []
             for client_name, group in df.groupby("_client_name"):
                 client_label = str(client_name).strip()
                 if not client_label:
                     continue
-                detail_stats_list.append(
-                    {
-                        "name": client_label,
-                        "bill_type": self._aggregate_text_values(group["_bill_type"]),
-                        "service_type": self._aggregate_text_values(group["_service_type"]),
-                        "flow_consumption": float(group["_flow_consumption"].sum() or 0.0),
-                        "managed_consumption": float(group["_managed_consumption"].sum() or 0.0),
-                        "net_consumption": float(group["_net_consumption"].sum() or 0.0),
-                        "service_fee": float(group["_service_fee"].sum() or 0.0),
-                        "fixed_service_fee": float(group["_fixed_service_fee"].sum() or 0.0),
-                        "coupon": float(group["_coupon"].sum() or 0.0),
-                        "dst": float(group["_dst"].sum() or 0.0),
-                        "total": float(group["_total"].sum() or 0.0),
-                    }
+                detail_payload = {
+                    "name": client_label,
+                    "bill_type": self._aggregate_text_values(group["_bill_type"]),
+                    "service_type": self._aggregate_text_values(group["_service_type"]),
+                    "flow_consumption": float(group["_flow_consumption"].sum() or 0.0),
+                    "managed_consumption": float(group["_managed_consumption"].sum() or 0.0),
+                    "net_consumption": float(group["_net_consumption"].sum() or 0.0),
+                    "service_fee": float(group["_service_fee"].sum() or 0.0),
+                    "fixed_service_fee": float(group["_fixed_service_fee"].sum() or 0.0),
+                    "coupon": float(group["_coupon"].sum() or 0.0),
+                    "dst": float(group["_dst"].sum() or 0.0),
+                    "total": float(group["_total"].sum() or 0.0),
+                }
+                has_activity = any(
+                    abs(float(detail_payload[key] or 0.0)) >= 1e-9
+                    for key in (
+                        "flow_consumption",
+                        "managed_consumption",
+                        "net_consumption",
+                        "service_fee",
+                        "fixed_service_fee",
+                        "coupon",
+                        "dst",
+                        "total",
+                    )
                 )
-            upsert_client_detail_stats_batch(month, detail_stats_list, db=db)
+                if has_activity:
+                    detail_stats_list.append(detail_payload)
 
-        total_consumption = df["_temp_consumption"].sum()
-        total_fee = df["_temp_fee"].sum()
-        upsert_billing_history(month, total_consumption, total_fee, db=db)
+        replace_client_stats_batch(month, stats_list, db=db)
+        replace_client_detail_stats_batch(month, detail_stats_list, db=db)
+
+        total_consumption = float(df["_temp_consumption"].sum() or 0.0)
+        total_fee = float(df["_temp_fee"].sum() or 0.0)
+        has_month_activity = abs(total_consumption) >= 1e-9 or abs(total_fee) >= 1e-9
+
+        if has_month_activity:
+            upsert_billing_history(month, total_consumption, total_fee, db=db)
+        else:
+            should_close = False
+            billing_db = db
+            if billing_db is None:
+                billing_db = SessionLocal()
+                should_close = True
+            try:
+                billing_db.query(BillingHistory).filter(BillingHistory.month == month).delete(synchronize_session=False)
+                billing_db.commit()
+            finally:
+                if should_close:
+                    billing_db.close()
+
         logger.info("Month %s: Total Consumption %s, Total Fee %s", month, total_consumption, total_fee)
 
-    def _get_results_file_signature(self) -> tuple[tuple[str, int, int], ...]:
-        signature_parts = []
-        result_paths = []
-        for path in self._get_upload_dir().glob("*_results.xlsx"):
+    def _get_results_file_signature(
+        self,
+        result_entries: list[dict[str, Any]] | None = None,
+    ) -> tuple[tuple[str, int, int, str], ...]:
+        signature_parts: list[tuple[str, int, int, str]] = []
+        entries = result_entries if result_entries is not None else self._get_dashboard_result_entries()
+        for entry in entries:
+            result_path = Path(entry["path"])
             try:
-                stat = path.stat()
+                stat = result_path.stat()
             except FileNotFoundError:
                 continue
-            result_paths.append((stat.st_mtime_ns, path.name, stat.st_size))
-
-        for modified_at, filename, size in sorted(result_paths):
-            try:
-                signature_parts.append((filename, modified_at, size))
-            except FileNotFoundError:
-                continue
+            signature_parts.append(
+                (
+                    str(entry.get("filename") or result_path.name),
+                    stat.st_mtime_ns,
+                    stat.st_size,
+                    str(entry.get("source_file") or ""),
+                )
+            )
         return tuple(signature_parts)
+
+    def _reset_dashboard_snapshot_tables(self, db: Session) -> None:
+        db.query(ClientMonthlyDetailStats).delete(synchronize_session=False)
+        db.query(ClientMonthlyStats).delete(synchronize_session=False)
+        db.query(BillingHistory).delete(synchronize_session=False)
+        db.commit()
 
     def backfill_detail_stats_from_results(self, db: Session | None = None) -> None:
         if os.getenv("TESTING") == "True":
             return
 
-        signature = self._get_results_file_signature()
+        result_entries = self._get_dashboard_result_entries()
+        signature = self._get_results_file_signature(result_entries)
         if not signature:
             return
 
@@ -1694,6 +2133,44 @@ class CalculationService:
         with self._detail_backfill_lock:
             if signature == self._detail_backfill_signature:
                 return
+
+            prepared_batches: list[tuple[str, pd.DataFrame]] = []
+            failures: list[tuple[str, Exception]] = []
+            for entry in result_entries:
+                result_path = Path(entry["path"])
+                filename = str(entry.get("filename") or result_path.name)
+                source_file = str(entry.get("source_file") or "").strip()
+                month_hint = (
+                    self._parse_month_from_filename(source_file)
+                    if source_file
+                    else self._parse_month_from_filename(filename, prefer_latest_match=True)
+                )
+                try:
+                    months_to_process = self._prepare_result_month_batches(
+                        source_file or filename,
+                        result_path,
+                        filename_month=month_hint,
+                    )
+                    prepared_batches.extend(months_to_process)
+                except Exception as exc:
+                    failures.append((filename, exc))
+
+            if failures:
+                for filename, exc in failures:
+                    logger.warning("鍘嗗彶璐﹀崟鏄庣粏鍥炲～澶辫触: %s (%s)", filename, exc)
+                logger.warning("鍘嗗彶璐﹀崟鏄庣粏鍥炲～宸蹭繚鐣欐棫蹇収锛屾湰娆℃湭瑕嗙洊鏁版嵁")
+                return
+
+            if not prepared_batches:
+                return
+
+            self._reset_dashboard_snapshot_tables(db)
+            for month_key, current_df in prepared_batches:
+                self._upsert_monthly_stats(month_key, current_df, db=db)
+            self._detail_backfill_signature = signature
+            return
+
+            self._reset_dashboard_snapshot_tables(db)
 
             for filename, _, _ in signature:
                 result_path = self._get_upload_dir() / filename
@@ -1711,19 +2188,8 @@ class CalculationService:
     def get_results_data(self, result_ref: str, owner_username: str):
         record = self._resolve_result_record_for_user(result_ref, owner_username)
         file_path = self._resolve_result_file(record["filename"])
-        sheet_name: str | int = 0
         operation = str(record.get("operation") or "")
-        if operation in self._ESTIMATE_RESULT_OPERATIONS:
-            try:
-                workbook = pd.ExcelFile(file_path)
-                try:
-                    if self._ESTIMATE_OUTPUT_SHEET_NAME in workbook.sheet_names:
-                        sheet_name = self._ESTIMATE_OUTPUT_SHEET_NAME
-                finally:
-                    workbook.close()
-            except Exception:
-                logger.warning("读取预估结果 Sheet 失败，回退首个 Sheet: %s", file_path, exc_info=True)
-        df = pd.read_excel(file_path, sheet_name=sheet_name)
+        df = self._load_result_dataframe(file_path, operation=operation)
 
         for col in df.columns:
             if pd.api.types.is_datetime64_any_dtype(df[col]):

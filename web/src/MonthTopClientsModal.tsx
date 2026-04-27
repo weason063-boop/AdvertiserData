@@ -23,6 +23,12 @@ interface MonthTopClientsResponse {
     clients: ClientData[]
 }
 
+const isClientData = (value: unknown): value is ClientData => (
+    typeof value === 'object'
+    && value !== null
+    && 'client_name' in value
+)
+
 export function MonthTopClientsModal({ month, onClose }: MonthTopClientsModalProps) {
     const [loading, setLoading] = useState(true)
     const [data, setData] = useState<MonthTopClientsResponse | null>(null)
@@ -104,14 +110,16 @@ export function MonthTopClientsModal({ month, onClose }: MonthTopClientsModalPro
                                             boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)',
                                             padding: '12px 16px'
                                         }}
-                                        formatter={(val: any) => [formatCurrency(val), '消耗金额']}
+                                        formatter={(val: unknown) => [formatCurrency(Number(val)), '消耗金额']}
                                     />
                                     <Bar
                                         dataKey="consumption"
                                         fill="#4F46E5"
                                         radius={[0, 4, 4, 0]}
                                         cursor="pointer"
-                                        onClick={(data: any) => setSelectedClient(data.client_name)}
+                                        onClick={(entry: unknown) => {
+                                            if (isClientData(entry)) setSelectedClient(entry.client_name)
+                                        }}
                                         isAnimationActive={false}
                                     />
                                 </BarChart>

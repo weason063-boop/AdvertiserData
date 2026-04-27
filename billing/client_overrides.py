@@ -73,6 +73,15 @@ def _normalize_media_key(media: str) -> str:
     return aliases.get(key, key)
 
 
+def _iter_client_rules(rule_config):
+    """Return one or more rule dictionaries in declared order."""
+    if isinstance(rule_config, list):
+        return [item for item in rule_config if isinstance(item, dict)]
+    if isinstance(rule_config, dict):
+        return [rule_config]
+    return []
+
+
 def apply_pre_overrides(
     clause: str, media: str, service_type: str, client_name: str
 ) -> Tuple[str, str, Optional[Tuple[float, float]]]:
@@ -82,50 +91,65 @@ def apply_pre_overrides(
     _ensure_loaded()
     normalized_media = _normalize_media_key(media)
 
-    for keyword, rule in _CLIENT_OVERRIDES.items():
+    for keyword, rule_config in _CLIENT_OVERRIDES.items():
         if keyword not in client_name:
             continue
 
-        action = rule.get('action', '')
+        for rule in _iter_client_rules(rule_config):
+            action = rule.get('action', '')
 
-        if action == 'remove_time_constraint':
-            clause = re.sub(r'(?:20)?2\d年\d+月起', '', clause)
-            clause = clause.replace('2月起', '')
-            force_kw = rule.get('force_keyword', '')
-            if force_kw and force_kw not in clause:
-                clause = force_kw + ' ' + clause
+            if action == 'remove_time_constraint':
+                clause = re.sub(r'(?:20)?2\d年\d+月起', '', clause)
+                clause = clause.replace('2月起', '')
+                force_kw = rule.get('force_keyword', '')
+                if force_kw and force_kw not in clause:
+                    clause = force_kw + ' ' + clause
 
-        elif action == 'force_service_type':
-            service_type = rule.get('service_type', service_type)
+            elif action == 'force_service_type':
+                service_type = rule.get('service_type', service_type)
 
-        elif action == 'conditional_zero':
-            cond_kw = rule.get('condition_keyword', '')
-            cond_st = rule.get('condition_service_type', '')
-            if cond_kw in clause and service_type == cond_st:
-                return clause, service_type, (0.0, 0.0)
+            elif action == 'conditional_zero':
+                cond_kw = rule.get('condition_keyword', '')
+                cond_st = rule.get('condition_service_type', '')
+                if cond_kw in clause and service_type == cond_st:
+                    return clause, service_type, (0.0, 0.0)
 
-        elif action == 'fixed_rate':
-            rate = rule.get('rate', 0.0)
-            return clause, service_type, (rate, 0.0)
+            elif action == 'fixed_rate':
+                rate = rule.get('rate', 0.0)
+                return clause, service_type, (rate, 0.0)
 
-        elif action == 'exclude_media':
-            excluded = {
-                normalized
-                for normalized in (
-                    _normalize_media_key(item)
-                    for item in rule.get('excluded_media', [])
-                )
-                if normalized
-            }
-            if normalized_media in excluded:
-                return clause, service_type, (0.0, 0.0)
+            elif action == 'exclude_media':
+                excluded = {
+                    normalized
+                    for normalized in (
+                        _normalize_media_key(item)
+                        for item in rule.get('excluded_media', [])
+                    )
+                    if normalized
+                }
+                if normalized_media in excluded:
+                    return clause, service_type, (0.0, 0.0)
 
-        elif action == 'media_rate':
-            r_media = _normalize_media_key(rule.get('media', ''))
-            r_st = rule.get('service_type', '')
-            r_rate = rule.get('rate', 0.0)
-            if r_media == normalized_media and service_type == r_st:
-                return clause, service_type, (r_rate, 0.0)
+            elif action == 'media_rate':
+                raw_media = rule.get('media', '')
+                if isinstance(raw_media, list):
+                    target_media = {
+                        normalized
+                        for normalized in (
+                            _normalize_media_key(item) for item in raw_media
+                        )
+                        if normalized
+                    }
+                else:
+                    normalized_target = _normalize_media_key(raw_media)
+                    target_media = {normalized_target} if normalized_target else set()
+
+                r_st = rule.get('service_type', '')
+                r_rate = rule.get('rate', 0.0)
+                if normalized_media in target_media and (
+                    not r_st or service_type == r_st
+                ):
+                    return clause, service_type, (r_rate, 0.0)
 
     # 应用标签别名（如 "哇鹅默认" → ""）
     for alias, replacement in _LABEL_ALIASES.items():

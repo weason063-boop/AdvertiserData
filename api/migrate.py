@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 _EMPTY_CLAUSE_VALUES = {"", "/", "-", "无", "none", "null", "nan"}
 _REVIEWABLE_FIELDS = ("business_type", "entity", "fee_clause", "payment_term")
+_NEW_CLIENT_REVIEW_FIELDS = ("business_type", "department", "entity", "fee_clause", "payment_term")
 
 
 def migrate_client_data(data: list) -> int:
@@ -113,6 +114,11 @@ def _collect_reviewable_changes(client_record: Client, chosen: dict[str, Any]) -
     return changed_fields
 
 
+def _collect_new_client_review_fields(chosen: dict[str, Any]) -> list[str]:
+    fields = [field_name for field_name in _NEW_CLIENT_REVIEW_FIELDS if field_name in chosen]
+    return fields or list(_NEW_CLIENT_REVIEW_FIELDS)
+
+
 def _clear_pending_contract_change_review(
     db,
     *,
@@ -131,15 +137,16 @@ def _clear_pending_contract_change_review(
 def _upsert_pending_contract_change_review(
     db,
     *,
-    client_record: Client,
+    client_record: Client | None,
     chosen: dict[str, Any],
     change_fields: list[str],
     source_type: str,
     source_token: str,
     sync_batch_id: str,
 ) -> None:
+    client_name = (client_record.name if client_record is not None else _to_text(chosen.get("name"))) or ""
     review = db.query(ClientContractChangeReview).filter(
-        ClientContractChangeReview.client_name == client_record.name,
+        ClientContractChangeReview.client_name == client_name,
         ClientContractChangeReview.source_type == source_type,
         ClientContractChangeReview.source_token == source_token,
         ClientContractChangeReview.status == "pending",
@@ -147,7 +154,7 @@ def _upsert_pending_contract_change_review(
 
     if review is None:
         review = ClientContractChangeReview(
-            client_name=client_record.name,
+            client_name=client_name,
             source_type=source_type,
             source_token=source_token,
             status="pending",
@@ -156,15 +163,15 @@ def _upsert_pending_contract_change_review(
 
     review.sync_batch_id = sync_batch_id
     review.change_fields_json = json.dumps(change_fields, ensure_ascii=False)
-    review.current_business_type = _to_text(client_record.business_type)
+    review.current_business_type = _to_text(getattr(client_record, "business_type", None))
     review.new_business_type = _to_text(chosen.get("business_type"))
-    review.current_department = _to_text(client_record.department)
+    review.current_department = _to_text(getattr(client_record, "department", None))
     review.new_department = _to_text(chosen.get("department"))
-    review.current_entity = _to_text(client_record.entity)
+    review.current_entity = _to_text(getattr(client_record, "entity", None))
     review.new_entity = _to_text(chosen.get("entity"))
-    review.current_fee_clause = _to_text(client_record.fee_clause)
+    review.current_fee_clause = _to_text(getattr(client_record, "fee_clause", None))
     review.new_fee_clause = _to_text(chosen.get("fee_clause"))
-    review.current_payment_term = _to_text(client_record.payment_term)
+    review.current_payment_term = _to_text(getattr(client_record, "payment_term", None))
     review.new_payment_term = _to_text(chosen.get("payment_term"))
     review.reviewed_at = None
     review.reviewed_by = None
@@ -247,23 +254,17 @@ def migrate_feishu_contract_lines(
             client_record = db.query(Client).filter(Client.name == client_name).first()
 
             if client_record is None:
-                db.add(
-                    Client(
-                        name=client_name,
-                        business_type=chosen.get("business_type") or "",
-                        department=chosen.get("department") or "",
-                        entity=chosen.get("entity") or "",
-                        fee_clause=chosen.get("fee_clause") or "",
-                        payment_term=chosen.get("payment_term") or "",
-                    )
-                )
-                _clear_pending_contract_change_review(
+                _upsert_pending_contract_change_review(
                     db,
-                    client_name=client_name,
+                    client_record=None,
+                    chosen=chosen,
+                    change_fields=_collect_new_client_review_fields(chosen),
                     source_type=source_type,
                     source_token=source_token,
+                    sync_batch_id=sync_batch_id,
                 )
                 new_clients.append(client_name)
+                pending_count += 1
                 continue
 
             change_fields = _collect_reviewable_changes(client_record, chosen)

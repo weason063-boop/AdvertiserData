@@ -17,6 +17,12 @@ class DashboardService:
     def _is_valid_month(self, month: str | None) -> bool:
         return bool(month and self._MONTH_PATTERN.match(month))
 
+    def _has_month_activity(self, consumption: float | int | None, fee: float | int | None) -> bool:
+        return (
+            abs(float(consumption or 0.0)) >= 1e-9
+            or abs(float(fee or 0.0)) >= 1e-9
+        )
+
     def __init__(self, calculation_service: CalculationService | None = None):
         self._calculation_service = calculation_service or CalculationService()
         self._detail_sync_lock = threading.Lock()
@@ -38,6 +44,21 @@ class DashboardService:
     def _get_available_detail_months(self, db: Session) -> List[str]:
         rows = db.query(ClientMonthlyDetailStats.month).distinct().all()
         months = [r[0] for r in rows if r and self._is_valid_month(r[0])]
+        months.sort()
+        return months
+
+    def _get_active_billing_months(self, db: Session) -> List[str]:
+        rows = db.query(
+            BillingHistory.month,
+            BillingHistory.total_consumption,
+            BillingHistory.total_service_fee,
+        ).all()
+        months = [
+            row.month
+            for row in rows
+            if self._is_valid_month(row.month)
+            and self._has_month_activity(row.total_consumption, row.total_service_fee)
+        ]
         months.sort()
         return months
 
@@ -340,6 +361,7 @@ class DashboardService:
             db = SessionLocal()
             should_close = True
         try:
+            self._ensure_detail_stats_synced(db)
             rows = db.query(
                 BillingHistory.month,
                 BillingHistory.total_consumption,
@@ -353,6 +375,7 @@ class DashboardService:
                 }
                 for row in rows
                 if self._is_valid_month(row.month)
+                and self._has_month_activity(row.total_consumption, row.total_service_fee)
             ]
             
             if not history:
@@ -405,6 +428,7 @@ class DashboardService:
             db = SessionLocal()
             should_close = True
         try:
+            self._ensure_detail_stats_synced(db)
             # Get latest month from DB
             latest_month_row = db.query(ClientMonthlyStats.month).order_by(desc(ClientMonthlyStats.month)).first()
             if not latest_month_row:
@@ -463,9 +487,11 @@ class DashboardService:
             db = SessionLocal()
             should_close = True
         try:
+            self._ensure_detail_stats_synced(db)
             detail_months = self._get_available_detail_months(db)
             base_months = self._get_available_months(db)
-            months = sorted(set(detail_months) | set(base_months))
+            active_billing_months = self._get_active_billing_months(db)
+            months = active_billing_months or sorted(set(detail_months) | set(base_months))
             if not months:
                 return {"latest_month": None, "rows": []}
 
@@ -535,6 +561,7 @@ class DashboardService:
             db = SessionLocal()
             should_close = True
         try:
+            self._ensure_detail_stats_synced(db)
 
             legacy_rows = db.query(
                 ClientMonthlyStats.month,
@@ -611,6 +638,7 @@ class DashboardService:
             db = SessionLocal()
             should_close = True
         try:
+            self._ensure_detail_stats_synced(db)
             # 1. Get latest month
             latest_month = db.query(func.max(ClientMonthlyStats.month)).scalar()
             if not latest_month:
@@ -735,6 +763,7 @@ class DashboardService:
             db = SessionLocal()
             should_close = True
         try:
+            self._ensure_detail_stats_synced(db)
             clients = get_top_clients(month, limit, db)
             normalized_compare_mode = self._normalize_month_compare_mode(compare_prev, compare_mode)
             response = {
@@ -839,6 +868,7 @@ class DashboardService:
             db = SessionLocal()
             should_close = True
         try:
+            self._ensure_detail_stats_synced(db)
             quarter_months_map = self._get_quarter_months_map(db)
             current_months = quarter_months_map.get(quarter, [])
             clients = self._aggregate_top_clients_by_months(current_months, limit, db)

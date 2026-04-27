@@ -65,3 +65,39 @@ def test_exclude_media_tt_excludes_tiktok_not_ttd(monkeypatch):
 
     assert tiktok_result == (0.0, 0.0)
     assert ttd_result is None
+
+
+def test_multiple_rules_for_one_client_match_by_media_groups(monkeypatch):
+    _patch_pre_overrides(
+        monkeypatch,
+        {
+            "美的": [
+                {
+                    "action": "media_rate",
+                    "media": ["Google", "Facebook", "YouTube", "TikTok", "Yandex", "TTD"],
+                    "service_type": "代投",
+                    "rate": 0.05,
+                },
+                {
+                    "action": "media_rate",
+                    "media": ["Bing", "MIQ", "Taboola", "Pinterest", "Linkedin"],
+                    "service_type": "代投",
+                    "rate": 0.08,
+                },
+                {
+                    "action": "media_rate",
+                    "media": ["Yahoo", "Naver"],
+                    "service_type": "代投",
+                    "rate": 0.04,
+                },
+            ]
+        },
+    )
+
+    _, _, google_result = overrides.apply_pre_overrides("任意条款", "Google", "代投", "美的集团")
+    _, _, bing_result = overrides.apply_pre_overrides("任意条款", "Bing", "代投", "美的集团")
+    _, _, yahoo_result = overrides.apply_pre_overrides("任意条款", "Yahoo", "代投", "美的集团")
+
+    assert google_result == (0.05, 0.0)
+    assert bing_result == (0.08, 0.0)
+    assert yahoo_result == (0.04, 0.0)
