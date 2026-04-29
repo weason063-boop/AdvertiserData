@@ -377,7 +377,6 @@ class DashboardService:
                 if self._is_valid_month(row.month)
                 and self._has_month_activity(row.total_consumption, row.total_service_fee)
             ]
-            
             if not history:
                 return {"stats": None, "trend": [], "top_clients": []}
             
@@ -415,7 +414,7 @@ class DashboardService:
             return {
                 "stats": stats,
                 "trend": history,
-                "top_clients": top_clients
+                "top_clients": top_clients,
             }
         finally:
             if should_close:

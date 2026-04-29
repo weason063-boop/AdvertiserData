@@ -23,13 +23,14 @@ from api.database import (
     ensure_client_contract_change_reviews_table,
     ensure_client_monthly_detail_stats_table,
     ensure_client_monthly_notes_table,
+    ensure_feishu_receivable_bills_table,
     SessionLocal,
     ensure_dashboard_indexes,
     ensure_operation_audit_table,
     ensure_user_permissions_column,
 )
 from api.models import User
-from api.routers import calculation, clients, dashboard, exchange_rates, users
+from api.routers import calculation, clients, dashboard, exchange_rates, feishu, users
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -52,6 +53,7 @@ async def lifespan(app: FastAPI):
         ensure_client_contract_change_reviews_table()
         ensure_client_monthly_detail_stats_table()
         ensure_client_monthly_notes_table()
+        ensure_feishu_receivable_bills_table()
         ensure_operation_audit_table()
         super_admin = db.query(User).filter(User.role == "super_admin").first()
         if not super_admin:
@@ -136,6 +138,7 @@ app.include_router(dashboard.router)
 app.include_router(clients.router)
 app.include_router(calculation.router)
 app.include_router(exchange_rates.router)
+app.include_router(feishu.router)
 app.include_router(users.router)
 
 

@@ -28,6 +28,7 @@ type Tab =
   | 'dashboard'
   | 'clientLedger'
   | 'clientDetail'
+  | 'receivables'
   | 'clients'
   | 'results'
   | 'estimateResults'
@@ -110,6 +111,7 @@ const isTab = (value: string | null): value is Tab =>
   value === 'dashboard' ||
   value === 'clientLedger' ||
   value === 'clientDetail' ||
+  value === 'receivables' ||
   value === 'clients' ||
   value === 'results' ||
   value === 'estimateResults' ||

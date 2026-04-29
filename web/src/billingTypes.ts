@@ -41,6 +41,88 @@ export interface DashboardTopClient {
   service_fee: number
 }
 
+export interface ReceivableCurrencyAmount {
+  currency_code: string
+  currency: string
+  amount: number
+  count: number
+}
+
+export interface ReceivableAgingBucket {
+  key: string
+  label: string
+  min_days: number
+  max_days?: number | null
+  count: number
+  amount_by_currency: ReceivableCurrencyAmount[]
+}
+
+export interface ReceivableTopOverdue {
+  record_id?: string
+  table_name?: string | null
+  application_no?: string | null
+  client_name: string
+  project_name?: string | null
+  flow_type: string
+  approval_status?: string | null
+  approval_node?: string | null
+  currency: string
+  currency_code: string
+  amount: number
+  outstanding_amount: number
+  overdue_amount: number
+  overdue_days: number
+  due_date?: string | null
+  owner_name?: string | null
+}
+
+export interface ReceivableSummary {
+  total_records: number
+  active_records: number
+  outstanding: {
+    count: number
+    amount_by_currency: ReceivableCurrencyAmount[]
+  }
+  overdue: {
+    count: number
+    amount_by_currency: ReceivableCurrencyAmount[]
+    max_overdue_days: number
+    aging_buckets?: ReceivableAgingBucket[]
+  }
+  by_flow: Array<{
+    flow_type: string
+    count: number
+    outstanding: ReceivableCurrencyAmount[]
+    overdue: ReceivableCurrencyAmount[]
+  }>
+  top_overdue: ReceivableTopOverdue[]
+  synced_at?: string | null
+}
+
+export interface ReceivableBillsResponse {
+  status: 'overdue' | 'outstanding' | 'all'
+  limit: number
+  client_name?: string | null
+  rows: ReceivableTopOverdue[]
+}
+
+export interface ReceivableClientSummaryRow {
+  client_name: string
+  owner_names: string[]
+  bill_count: number
+  outstanding_count: number
+  overdue_count: number
+  outstanding_amount_by_currency: ReceivableCurrencyAmount[]
+  overdue_amount_by_currency: ReceivableCurrencyAmount[]
+  max_overdue_days: number
+}
+
+export interface ReceivableClientSummaryResponse {
+  metric: 'overdue' | 'outstanding'
+  limit: number
+  rows: ReceivableClientSummaryRow[]
+}
+
 export interface DashboardData {
   stats: DashboardStats | null
   trend: DashboardTrendPoint[]

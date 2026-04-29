@@ -14,6 +14,7 @@ import { Dashboard } from './DashboardV5'
 import { ExchangeRates } from './ExchangeRates'
 import { ErrorBoundary } from './ErrorBoundary'
 import { LatestMonthClientsPanel } from './LatestMonthClientsPanelV2'
+import { ReceivablesPanel } from './ReceivablesPanel'
 import { ResultsPanel } from './ResultsPanel'
 import { TaskHistoryPanel } from './TaskHistoryPanel'
 import { TopbarActions } from './TopbarActions'
@@ -22,6 +23,7 @@ type Tab =
   | 'dashboard'
   | 'clientLedger'
   | 'clientDetail'
+  | 'receivables'
   | 'clients'
   | 'results'
   | 'estimateResults'
@@ -124,6 +126,8 @@ const getTitle = (activeTab: Tab): string => {
       return '客户明细'
     case 'clientDetail':
       return '客户历史账单'
+    case 'receivables':
+      return '应收回款'
     case 'results':
       return '账单明细'
     case 'estimateResults':
@@ -286,6 +290,13 @@ export function MainContentShell({
           />
 
           {activeTab === 'rates' && <ExchangeRates />}
+
+          <ReceivablesPanel
+            active={activeTab === 'receivables'}
+            canSync={canFeishuSync}
+            onNotify={onNotify}
+            onRequireAuth={onRequireAuth}
+          />
 
           <ClientsPanel
             active={activeTab === 'clients'}

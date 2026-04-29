@@ -12,6 +12,7 @@ from .models import (
     BillingHistory,
     Client,
     ClientContractChangeReview,
+    FeishuReceivableBill,
     ClientMonthlyDetailStats,
     ClientMonthlyNote,
     ClientMonthlyStats,
@@ -237,6 +238,79 @@ def ensure_client_contract_change_reviews_table():
             )
     except OperationalError as exc:
         logger.warning("ensure_client_contract_change_reviews_table skipped due to database operational error: %s", exc)
+
+
+def ensure_feishu_receivable_bills_table():
+    """
+    Ensure Feishu receivable/overdue snapshot table exists.
+    Safe to run repeatedly.
+    """
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS feishu_receivable_bills (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        source_type TEXT NOT NULL DEFAULT 'feishu_bitable',
+                        source_token TEXT NOT NULL,
+                        table_id TEXT NOT NULL,
+                        table_name TEXT NOT NULL,
+                        record_id TEXT NOT NULL,
+                        flow_type TEXT NOT NULL,
+                        source_id TEXT,
+                        application_no TEXT,
+                        approval_status TEXT,
+                        approval_node TEXT,
+                        client_name TEXT NOT NULL DEFAULT '',
+                        project_name TEXT,
+                        business_type TEXT,
+                        department TEXT,
+                        owner_name TEXT,
+                        bill_type TEXT,
+                        currency TEXT NOT NULL DEFAULT '',
+                        currency_code TEXT NOT NULL DEFAULT '',
+                        amount FLOAT DEFAULT 0,
+                        outstanding_amount FLOAT DEFAULT 0,
+                        overdue_amount FLOAT DEFAULT 0,
+                        overdue_days INTEGER DEFAULT 0,
+                        is_active BOOLEAN DEFAULT 1,
+                        is_outstanding BOOLEAN DEFAULT 0,
+                        is_overdue BOOLEAN DEFAULT 0,
+                        due_date TEXT,
+                        due_date_text TEXT,
+                        initiated_at DATETIME,
+                        completed_at DATETIME,
+                        raw_fields_json TEXT,
+                        synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        CONSTRAINT _feishu_receivable_source_record_uc
+                            UNIQUE (source_type, source_token, table_id, record_id)
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_feishu_receivable_table_record "
+                    "ON feishu_receivable_bills (table_id, record_id)"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_feishu_receivable_client_status "
+                    "ON feishu_receivable_bills (client_name, approval_status)"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_feishu_receivable_overdue "
+                    "ON feishu_receivable_bills (is_overdue, currency_code)"
+                )
+            )
+    except OperationalError as exc:
+        logger.warning("ensure_feishu_receivable_bills_table skipped due to database operational error: %s", exc)
 
 
 def ensure_operation_audit_table():

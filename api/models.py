@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, UniqueConstraint, Index, text
+from sqlalchemy import Boolean, Column, Integer, String, Float, DateTime, UniqueConstraint, Index, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.sql import func
 
@@ -142,6 +142,56 @@ class ClientMonthlyNote(Base):
         UniqueConstraint('month', 'client_name', name='_month_client_note_uc'),
         Index('ix_client_monthly_notes_client_month', 'client_name', 'month'),
     )
+
+
+class FeishuReceivableBill(Base):
+    __tablename__ = "feishu_receivable_bills"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    source_type = Column(String, nullable=False, default="feishu_bitable")
+    source_token = Column(String, nullable=False)
+    table_id = Column(String, nullable=False)
+    table_name = Column(String, nullable=False)
+    record_id = Column(String, nullable=False)
+    flow_type = Column(String, nullable=False)
+    source_id = Column(String)
+    application_no = Column(String)
+    approval_status = Column(String)
+    approval_node = Column(String)
+    client_name = Column(String, nullable=False, default="")
+    project_name = Column(String)
+    business_type = Column(String)
+    department = Column(String)
+    owner_name = Column(String)
+    bill_type = Column(String)
+    currency = Column(String, nullable=False, default="")
+    currency_code = Column(String, nullable=False, default="")
+    amount = Column(Float, default=0.0)
+    outstanding_amount = Column(Float, default=0.0)
+    overdue_amount = Column(Float, default=0.0)
+    overdue_days = Column(Integer, default=0)
+    is_active = Column(Boolean, default=True)
+    is_outstanding = Column(Boolean, default=False)
+    is_overdue = Column(Boolean, default=False)
+    due_date = Column(String)
+    due_date_text = Column(String)
+    initiated_at = Column(DateTime)
+    completed_at = Column(DateTime)
+    raw_fields_json = Column(String)
+    synced_at = Column(DateTime, server_default=func.now(), index=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint(
+            'source_type', 'source_token', 'table_id', 'record_id',
+            name='_feishu_receivable_source_record_uc',
+        ),
+        Index('ix_feishu_receivable_table_record', 'table_id', 'record_id'),
+        Index('ix_feishu_receivable_client_status', 'client_name', 'approval_status'),
+        Index('ix_feishu_receivable_overdue', 'is_overdue', 'currency_code'),
+    )
+
 
 class User(Base):
     __tablename__ = "users"

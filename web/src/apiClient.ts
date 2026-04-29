@@ -4,26 +4,47 @@ const resolveApiHost = () => {
   return host
 }
 
+const isLoopbackHost = () => {
+  const host = window.location.hostname.toLowerCase()
+  return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]'
+}
+
 export const API_BASE = `http://${resolveApiHost()}:8000`
 export const API_FALLBACK_BASE = `http://${resolveApiHost()}:8001`
 export const SAME_ORIGIN_BASE = ''
 
+const isDevFrontendPort = () => window.location.port === '5174'
+
 const shouldUseSameOriginApi = () => {
   const port = window.location.port || ''
-  // In this project frontend is usually served on 5173, while backend is 8000.
+  // Frontend dev/prod ports are not API servers; avoid same-origin /api 404s.
   // Avoid same-origin /api fallback here to prevent noisy 404 loops.
-  return port !== '5173' && port !== '4173'
+  return port !== '5173' && port !== '5174' && port !== '4173'
 }
 
-const FALLBACK_BASES = Array.from(new Set([
+const resolveLocalFallbackBases = (preferredPort: '8000' | '8001') => {
+  if (!isLoopbackHost()) return []
+  const first = preferredPort === '8001'
+    ? ['http://127.0.0.1:8001', 'http://localhost:8001']
+    : ['http://127.0.0.1:8000', 'http://localhost:8000']
+  const second = preferredPort === '8001'
+    ? ['http://127.0.0.1:8000', 'http://localhost:8000']
+    : ['http://127.0.0.1:8001', 'http://localhost:8001']
+  return [...first, ...second]
+}
+
+const resolveFallbackBases = () => (isDevFrontendPort() ? [
+  API_FALLBACK_BASE,
+  API_BASE,
+  ...resolveLocalFallbackBases('8001'),
+] : [
   API_BASE,
   API_FALLBACK_BASE,
-  'http://127.0.0.1:8000',
-  'http://localhost:8000',
-  'http://127.0.0.1:8001',
-  'http://localhost:8001',
+  ...resolveLocalFallbackBases('8000'),
   ...(shouldUseSameOriginApi() ? [SAME_ORIGIN_BASE] : []),
-]))
+])
+
+const FALLBACK_BASES = Array.from(new Set(resolveFallbackBases()))
 
 let lastKnownGoodBase: string | null = null
 

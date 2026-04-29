@@ -1,9 +1,10 @@
-import { BookOpen, FileClock, FileText, LayoutDashboard, TrendingUp, Users } from 'lucide-react'
+import { BookOpen, FileClock, FileText, LayoutDashboard, TrendingUp, Users, WalletCards } from 'lucide-react'
 
 type Tab =
   | 'dashboard'
   | 'clientLedger'
   | 'clientDetail'
+  | 'receivables'
   | 'clients'
   | 'results'
   | 'estimateResults'
@@ -28,21 +29,28 @@ export function SidebarNav({
         onClick={() => onSwitchTab('dashboard')}
       >
         <LayoutDashboard size={18} />
-        <span>数据看板</span>
+        <span>数据概览</span>
       </button>
       <button
         className={`nav-item ${activeTab === 'clientLedger' || activeTab === 'clientDetail' ? 'active' : ''}`}
         onClick={() => onSwitchTab('clientLedger')}
       >
         <BookOpen size={18} />
-        <span>客户明细</span>
+        <span>客户账单</span>
       </button>
       <button
         className={`nav-item ${activeTab === 'rates' ? 'active' : ''}`}
         onClick={() => onSwitchTab('rates')}
       >
         <TrendingUp size={18} />
-        <span>实时汇率</span>
+        <span>汇率管理</span>
+      </button>
+      <button
+        className={`nav-item ${activeTab === 'receivables' ? 'active' : ''}`}
+        onClick={() => onSwitchTab('receivables')}
+      >
+        <WalletCards size={18} />
+        <span>应收回款</span>
       </button>
       <button
         className={`nav-item ${activeTab === 'clients' ? 'active' : ''}`}
@@ -56,14 +64,14 @@ export function SidebarNav({
         onClick={() => onSwitchTab('results')}
       >
         <FileText size={18} />
-        <span>账单明细</span>
+        <span>计算结果</span>
       </button>
       <button
         className={`nav-item ${activeTab === 'estimateResults' ? 'active' : ''}`}
         onClick={() => onSwitchTab('estimateResults')}
       >
         <FileText size={18} />
-        <span>预估消耗</span>
+        <span>预估结果</span>
       </button>
       {canViewTaskHistory && (
         <button
