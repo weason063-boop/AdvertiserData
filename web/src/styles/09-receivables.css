@@ -498,6 +498,46 @@
   padding: 0.65rem;
 }
 
+.receivables-floating-filters {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.receivables-floating-segment {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: #fff;
+  padding: 0.2rem;
+}
+
+.receivables-floating-segment button {
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-secondary);
+  padding: 0.34rem 0.7rem;
+  font-size: 0.78rem;
+  font-weight: 800;
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+
+.receivables-floating-segment button:hover {
+  color: var(--primary);
+}
+
+.receivables-floating-segment button.active {
+  background: var(--primary);
+  color: #fff;
+  box-shadow: 0 8px 18px -14px rgba(79, 70, 229, 0.8);
+}
+
 .receivables-floating-currencies {
   display: flex;
   align-items: center;

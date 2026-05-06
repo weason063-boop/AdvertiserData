@@ -26,6 +26,7 @@ import { Skeleton } from './Skeleton'
 
 type BillFilter = 'overdue' | 'outstanding' | 'all'
 type ClientMetric = 'overdue' | 'outstanding'
+type ReceivableFlowFilter = 'all' | 'bill_send' | 'client_advance'
 
 interface ReceivablesPanelProps {
   active: boolean
@@ -70,6 +71,12 @@ const FILTER_OPTIONS: Array<{ key: BillFilter; label: string }> = [
 const CLIENT_METRIC_OPTIONS: Array<{ key: ClientMetric; label: string }> = [
   { key: 'overdue', label: '逾期金额' },
   { key: 'outstanding', label: '未回款金额' },
+]
+
+const RECEIVABLE_FLOW_OPTIONS: Array<{ key: ReceivableFlowFilter; label: string }> = [
+  { key: 'all', label: '全部流程' },
+  { key: 'bill_send', label: '账单发送' },
+  { key: 'client_advance', label: '客户垫付' },
 ]
 
 const AGING_COLORS = ['#ef4444', '#f97316', '#d97706', '#7f1d1d']
@@ -149,6 +156,7 @@ export function ReceivablesPanel({
   const [detailFilter, setDetailFilter] = useState<BillFilter>('all')
   const [detailRows, setDetailRows] = useState<ReceivableTopOverdue[]>([])
   const [summaryDetail, setSummaryDetail] = useState<{ status: 'outstanding' | 'overdue'; title: string } | null>(null)
+  const [summaryDetailFlow, setSummaryDetailFlow] = useState<ReceivableFlowFilter>('all')
   const [summaryDetailRows, setSummaryDetailRows] = useState<ReceivableTopOverdue[]>([])
   const [loading, setLoading] = useState(false)
   const [detailLoading, setDetailLoading] = useState(false)
@@ -199,13 +207,19 @@ export function ReceivablesPanel({
     }
   }
 
-  const loadSummaryDetails = async (status: 'outstanding' | 'overdue') => {
+  const loadSummaryDetails = async (
+    status: 'outstanding' | 'overdue',
+    nextFlow: ReceivableFlowFilter = summaryDetailFlow,
+  ) => {
     setSummaryDetailLoading(true)
     try {
       const query = new URLSearchParams({
         status,
         limit: '500',
       })
+      if (nextFlow !== 'all') {
+        query.set('flow_type', nextFlow)
+      }
       const { data } = await apiJson<ReceivableBillsResponse>(`/api/feishu/receivables/bills?${query.toString()}`)
       setSummaryDetailRows(data.rows || [])
     } catch (error: unknown) {
@@ -237,7 +251,7 @@ export function ReceivablesPanel({
         await loadClientDetails(selectedClient.client_name, detailFilter)
       }
       if (summaryDetail) {
-        await loadSummaryDetails(summaryDetail.status)
+        await loadSummaryDetails(summaryDetail.status, summaryDetailFlow)
       }
     } catch (error: unknown) {
       if (isApiHttpError(error) && error.status === 401) {
@@ -258,12 +272,20 @@ export function ReceivablesPanel({
   }
 
   const openSummaryDetail = (status: 'outstanding' | 'overdue') => {
+    setSummaryDetailFlow('all')
     setSummaryDetail({
       status,
       title: status === 'overdue' ? '逾期账单金额' : '未回款金额',
     })
     setSummaryDetailRows([])
-    void loadSummaryDetails(status)
+    void loadSummaryDetails(status, 'all')
+  }
+
+  const handleSummaryFlowChange = (nextFlow: ReceivableFlowFilter) => {
+    setSummaryDetailFlow(nextFlow)
+    if (summaryDetail) {
+      void loadSummaryDetails(summaryDetail.status, nextFlow)
+    }
   }
 
   useEffect(() => {
@@ -337,6 +359,20 @@ export function ReceivablesPanel({
     : '尚未同步'
 
   const metricLabel = clientMetric === 'overdue' ? '逾期金额' : '未回款金额'
+  const getSummaryDetailEntries = (
+    status: 'outstanding' | 'overdue',
+    flow: ReceivableFlowFilter,
+  ) => {
+    if (flow === 'all') {
+      return status === 'overdue'
+        ? summary?.overdue.amount_by_currency || []
+        : summary?.outstanding.amount_by_currency || []
+    }
+    const flowSummary = summary?.by_flow.find((item) => item.flow_type === flow)
+    return status === 'overdue'
+      ? flowSummary?.overdue || []
+      : flowSummary?.outstanding || []
+  }
 
   if (!active) return null
 
@@ -527,17 +563,16 @@ export function ReceivablesPanel({
       {summaryDetail && (
         <SummaryDetailPopup
           title={summaryDetail.title}
-          entries={
-            summaryDetail.status === 'overdue'
-              ? summary?.overdue.amount_by_currency || []
-              : summary?.outstanding.amount_by_currency || []
-          }
+          entries={getSummaryDetailEntries(summaryDetail.status, summaryDetailFlow)}
           rows={summaryDetailRows}
           loading={summaryDetailLoading}
           amountMode={summaryDetail.status}
+          flowFilter={summaryDetailFlow}
+          onFlowFilterChange={handleSummaryFlowChange}
           onClose={() => {
             setSummaryDetail(null)
             setSummaryDetailRows([])
+            setSummaryDetailFlow('all')
           }}
         />
       )}
@@ -602,6 +637,8 @@ function SummaryDetailPopup({
   rows,
   loading,
   amountMode,
+  flowFilter,
+  onFlowFilterChange,
   onClose,
 }: {
   title: string
@@ -609,6 +646,8 @@ function SummaryDetailPopup({
   rows: ReceivableTopOverdue[]
   loading: boolean
   amountMode: 'outstanding' | 'overdue'
+  flowFilter: ReceivableFlowFilter
+  onFlowFilterChange: (filter: ReceivableFlowFilter) => void
   onClose: () => void
 }) {
   const [currencyFilter, setCurrencyFilter] = useState('')
@@ -626,9 +665,15 @@ function SummaryDetailPopup({
     rows.forEach((row) => appendCurrency(row.currency_code || row.currency, row.currency || row.currency_code))
     return options
   }, [entries, rows])
+  useEffect(() => {
+    if (currencyFilter && !currencyOptions.some((item) => item.code === currencyFilter)) {
+      setCurrencyFilter('')
+    }
+  }, [currencyFilter, currencyOptions])
   const filteredRows = useMemo(() => {
     const keyword = searchText.trim().toLowerCase()
     return rows.filter((row) => {
+      if (flowFilter !== 'all' && row.flow_type !== flowFilter) return false
       const rowCurrency = row.currency_code || row.currency
       if (currencyFilter && rowCurrency !== currencyFilter) return false
       if (!keyword) return true
@@ -643,7 +688,7 @@ function SummaryDetailPopup({
         row.due_date,
       ].some((value) => String(value || '').toLowerCase().includes(keyword))
     })
-  }, [currencyFilter, rows, searchText])
+  }, [currencyFilter, flowFilter, rows, searchText])
 
   return (
     <div className="receivables-floating-backdrop" onClick={onClose}>
@@ -659,24 +704,38 @@ function SummaryDetailPopup({
         </div>
 
         <div className="receivables-floating-toolbar">
-          <div className="receivables-floating-currencies">
-            <button
-              type="button"
-              className={!currencyFilter ? 'active' : ''}
-              onClick={() => setCurrencyFilter('')}
-            >
-              全部
-            </button>
-            {currencyOptions.map((item) => (
+          <div className="receivables-floating-filters">
+            <div className="receivables-floating-segment" aria-label="流程类型筛选">
+              {RECEIVABLE_FLOW_OPTIONS.map((item) => (
+                <button
+                  key={item.key}
+                  type="button"
+                  className={flowFilter === item.key ? 'active' : ''}
+                  onClick={() => onFlowFilterChange(item.key)}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+            <div className="receivables-floating-currencies" aria-label="币种筛选">
               <button
-                key={item.code}
                 type="button"
-                className={`${currencyFilter === item.code ? 'active' : ''} ${currencyTone(item.code)}`}
-                onClick={() => setCurrencyFilter(item.code)}
+                className={!currencyFilter ? 'active' : ''}
+                onClick={() => setCurrencyFilter('')}
               >
-                {item.code}
+                全部币种
               </button>
-            ))}
+              {currencyOptions.map((item) => (
+                <button
+                  key={item.code}
+                  type="button"
+                  className={`${currencyFilter === item.code ? 'active' : ''} ${currencyTone(item.code)}`}
+                  onClick={() => setCurrencyFilter(item.code)}
+                >
+                  {item.code}
+                </button>
+              ))}
+            </div>
           </div>
           <input
             type="search"

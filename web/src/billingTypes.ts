@@ -101,6 +101,7 @@ export interface ReceivableSummary {
 
 export interface ReceivableBillsResponse {
   status: 'overdue' | 'outstanding' | 'all'
+  flow_type?: 'all' | 'bill_send' | 'client_advance'
   limit: number
   client_name?: string | null
   rows: ReceivableTopOverdue[]

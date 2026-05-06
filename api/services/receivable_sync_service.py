@@ -152,6 +152,7 @@ class ReceivableSyncService:
         status: str = "overdue",
         limit: int = 100,
         client_name: str | None = None,
+        flow_type: str | None = None,
         db: Session | None = None,
     ) -> list[dict[str, Any]]:
         should_close = False
@@ -170,6 +171,8 @@ class ReceivableSyncService:
             )
             if client_name:
                 query = query.filter(FeishuReceivableBill.client_name == str(client_name).strip())
+            if flow_type in {"bill_send", "client_advance"}:
+                query = query.filter(FeishuReceivableBill.flow_type == flow_type)
             if status == "overdue":
                 query = query.filter(FeishuReceivableBill.is_overdue.is_(True))
                 query = query.order_by(desc(FeishuReceivableBill.overdue_amount), desc(FeishuReceivableBill.overdue_days))

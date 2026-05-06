@@ -446,3 +446,58 @@ def test_list_bills_filters_by_client_name(db_session):
     assert rows[0]["client_name"] == "Alpha"
     assert rows[0]["project_name"] == "Project A"
     assert rows[0]["application_no"] == "APP-001"
+
+
+def test_list_bills_filters_by_flow_type(db_session):
+    db_session.add_all(
+        [
+            FeishuReceivableBill(
+                source_token="app",
+                table_id=BILL_SEND_TABLE_ID,
+                table_name="Bill Send",
+                record_id="bill-send",
+                flow_type="bill_send",
+                client_name="Alpha",
+                approval_status="Pending",
+                currency="USD",
+                currency_code="USD",
+                amount=100,
+                outstanding_amount=100,
+                overdue_amount=0,
+                overdue_days=0,
+                is_active=True,
+                is_outstanding=True,
+                is_overdue=False,
+            ),
+            FeishuReceivableBill(
+                source_token="app",
+                table_id=CLIENT_ADVANCE_TABLE_ID,
+                table_name="Client Advance",
+                record_id="client-advance",
+                flow_type="client_advance",
+                client_name="Beta",
+                approval_status="Pending",
+                currency="EUR",
+                currency_code="EUR",
+                amount=200,
+                outstanding_amount=200,
+                overdue_amount=0,
+                overdue_days=0,
+                is_active=True,
+                is_outstanding=True,
+                is_overdue=False,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    rows = ReceivableSyncService().list_bills(
+        status="outstanding",
+        flow_type="client_advance",
+        limit=10,
+        db=db_session,
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["record_id"] == "client-advance"
+    assert rows[0]["flow_type"] == "client_advance"

@@ -5,7 +5,6 @@ import json
 import logging
 import os
 from datetime import datetime
-from threading import Lock
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
@@ -14,11 +13,11 @@ from sqlalchemy.orm import Session
 from api.auth import PERMISSION_FEISHU_SYNC, get_current_user, require_permission
 from api.database import get_db, record_operation_audit
 from api.services.receivable_sync_service import ReceivableSyncService
+from api.services.receivable_sync_scheduler import run_receivable_sync_job
 
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/feishu", tags=["feishu"])
-_EVENT_SYNC_LOCK = Lock()
 _LAST_EVENT_SYNC_AT: datetime | None = None
 
 
@@ -33,6 +32,7 @@ def get_receivable_summary(
 @router.get("/receivables/bills")
 def list_receivable_bills(
     status: str = Query("overdue", pattern="^(overdue|outstanding|all)$"),
+    flow_type: str = Query("all", pattern="^(all|bill_send|client_advance)$"),
     limit: int = Query(100, ge=1, le=500),
     client_name: str | None = Query(None),
     db: Session = Depends(get_db),
@@ -40,9 +40,16 @@ def list_receivable_bills(
 ):
     return {
         "status": status,
+        "flow_type": flow_type,
         "limit": limit,
         "client_name": client_name,
-        "rows": ReceivableSyncService().list_bills(status=status, limit=limit, client_name=client_name, db=db),
+        "rows": ReceivableSyncService().list_bills(
+            status=status,
+            flow_type=None if flow_type == "all" else flow_type,
+            limit=limit,
+            client_name=client_name,
+            db=db,
+        ),
     }
 
 
@@ -59,29 +66,15 @@ def get_receivable_client_summary(
 @router.post("/receivables/sync")
 def sync_receivables(current_user: dict = Depends(require_permission(PERMISSION_FEISHU_SYNC))):
     actor = str(current_user.get("username") or current_user.get("sub") or "system")
-    service = ReceivableSyncService()
     try:
-        result = service.sync_all()
-        record_operation_audit(
-            category="feishu",
-            action="sync_receivables",
+        return run_receivable_sync_job(
             actor=actor,
-            status="success",
-            metadata={
-                "synced_records": result.get("synced_records"),
-                "table_counts": result.get("table_counts"),
-            },
+            action="sync_receivables",
+            trigger="manual",
+            blocking=True,
         )
-        return result
     except Exception as exc:
         logger.exception("Failed to sync Feishu receivables")
-        record_operation_audit(
-            category="feishu",
-            action="sync_receivables",
-            actor=actor,
-            status="failed",
-            error_message=str(exc),
-        )
         raise HTTPException(status_code=500, detail=f"飞书应收/逾期同步失败: {exc}")
 
 
@@ -133,44 +126,17 @@ def _sync_receivables_from_event(payload: dict[str, Any]) -> None:
         )
         return
 
-    if not _EVENT_SYNC_LOCK.acquire(blocking=False):
-        record_operation_audit(
-            category="feishu",
-            action="event_sync_receivables",
-            actor="feishu_event",
-            status="skipped",
-            metadata={
-                "event_type": event_type,
-                "reason": "sync_already_running",
-            },
-        )
-        return
-
     _LAST_EVENT_SYNC_AT = now
     try:
-        result = ReceivableSyncService().sync_all()
-        record_operation_audit(
-            category="feishu",
-            action="event_sync_receivables",
+        run_receivable_sync_job(
             actor="feishu_event",
-            status="success",
-            metadata={
-                "event_type": event_type,
-                "synced_records": result.get("synced_records"),
-            },
-        )
-    except Exception as exc:
-        logger.exception("Failed to sync Feishu receivables from event")
-        record_operation_audit(
-            category="feishu",
             action="event_sync_receivables",
-            actor="feishu_event",
-            status="failed",
-            error_message=str(exc),
+            trigger="event",
+            blocking=False,
             metadata={"event_type": event_type},
         )
-    finally:
-        _EVENT_SYNC_LOCK.release()
+    except Exception:
+        logger.exception("Failed to sync Feishu receivables from event")
 
 
 def _event_sync_throttle_seconds() -> int:

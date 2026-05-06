@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """FastAPI backend service."""
+import asyncio
 import json
 import logging
 import os
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import timedelta
 
 from dotenv import load_dotenv
@@ -31,6 +32,7 @@ from api.database import (
 )
 from api.models import User
 from api.routers import calculation, clients, dashboard, exchange_rates, feishu, users
+from api.services.receivable_sync_scheduler import start_receivable_sync_scheduler
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -92,7 +94,14 @@ async def lifespan(app: FastAPI):
 
     # FX sync is intentionally decoupled from API startup and should run via
     # scheduled script/manual trigger only.
-    yield
+    receivable_sync_task = start_receivable_sync_scheduler()
+    try:
+        yield
+    finally:
+        if receivable_sync_task:
+            receivable_sync_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await receivable_sync_task
 
 
 app = FastAPI(title="合同条款管理系统", version="1.0.0", lifespan=lifespan)
