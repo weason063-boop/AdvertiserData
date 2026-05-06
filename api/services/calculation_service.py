@@ -93,7 +93,11 @@ class CalculationService:
     _NET_CONSUMPTION_COLUMN_CANDIDATES = ("汇总纯花费", "汇总纯消耗", "账单汇总")
     _VISIBLE_CONSUMPTION_COLUMN_CANDIDATES = ("代投消耗", "流水消耗", "账单汇总", "代投/咨询拆分", "流水拆分")
     _CLIENT_ACCOUNT_SHEET_MARKERS = ("客户端口账户代投", "客户端口代投")
-    _ESTIMATE_REQUIRED_COLUMNS = ("媒介", "投放类型", "母公司")
+    _ESTIMATE_REQUIRED_COLUMN_ALIASES = {
+        "母公司": ("母公司",),
+        "媒介": ("媒介",),
+        "服务类型": ("服务类型", "投放类型"),
+    }
 
     def __init__(self, daily_fx_snapshot_service: DailyFxSnapshotService | None = None):
         self._daily_fx_snapshot_service = daily_fx_snapshot_service or DailyFxSnapshotService()
@@ -289,11 +293,32 @@ class CalculationService:
         columns: list[str],
         *,
         include_words: tuple[str, ...],
+        exclude_words: tuple[str, ...] = (),
     ) -> str | None:
+        candidates: list[tuple[int, int, str]] = []
         for column_name in columns:
             text = str(column_name).strip()
-            if text and all(word in text for word in include_words):
-                return text
+            if not text or not all(word in text for word in include_words):
+                continue
+            if exclude_words and any(word in text for word in exclude_words):
+                continue
+            score = 0
+            if "预估" in text:
+                score += 2
+            if "求和项" in text:
+                score += 1
+            candidates.append((score, -len(text), text))
+        if not candidates:
+            return None
+        candidates.sort(reverse=True)
+        return candidates[0][2]
+
+    def _find_estimate_required_column(self, columns: list[str], logical_name: str) -> str | None:
+        aliases = self._ESTIMATE_REQUIRED_COLUMN_ALIASES.get(logical_name, (logical_name,))
+        column_set = {str(column).strip() for column in columns}
+        for alias in aliases:
+            if alias in column_set:
+                return alias
         return None
 
     def _normalize_estimate_text(self, value: Any) -> str:
@@ -330,23 +355,25 @@ class CalculationService:
         for sheet_name in preferred_sheet_names:
             header_df = pd.read_excel(workbook, sheet_name=sheet_name, nrows=0)
             columns = [str(col).strip() for col in header_df.columns.tolist()]
-            if not set(self._ESTIMATE_REQUIRED_COLUMNS).issubset(set(columns)):
+            if not all(self._find_estimate_required_column(columns, name) for name in self._ESTIMATE_REQUIRED_COLUMN_ALIASES):
                 continue
 
             consumption_col = self._find_estimate_dynamic_column(
                 columns,
-                include_words=("\u6d88\u8017", "\u9884\u4f30"),
+                include_words=("\u6d88\u8017",),
+                exclude_words=("\u6bdb\u5229",),
             )
             gross_profit_col = self._find_estimate_dynamic_column(
                 columns,
-                include_words=("\u6bdb\u5229", "\u9884\u4f30"),
+                include_words=("\u6bdb\u5229",),
+                exclude_words=("\u6d88\u8017",),
             )
             if consumption_col and gross_profit_col:
                 return sheet_name
 
         raise HTTPException(
             status_code=400,
-            detail="\u9884\u4f30\u6a21\u677f\u7f3a\u5c11\u53ef\u8bc6\u522b\u7684\u5de5\u4f5c\u8868\uff0c\u8bf7\u68c0\u67e5\u5fc5\u586b\u5217\u4e0e\u201c\u6d88\u8017\u9884\u4f30\u201d/\u201c\u6bdb\u5229\u9884\u4f30\u201d\u52a8\u6001\u5217",
+            detail="\u9884\u4f30\u6a21\u677f\u7f3a\u5c11\u53ef\u8bc6\u522b\u7684\u5de5\u4f5c\u8868\uff0c\u8bf7\u68c0\u67e5\u5fc5\u586b\u5217\uff08\u59cb\u7ec8\u652f\u6301\u201c\u7269\u516c\u53f8\u3001\u5a92\u4ecb\u3001\u670d\u52a1\u7c7b\u578b/\u6295\u653e\u7c7b\u578b\u201d\uff09\u4ee5\u53ca\u201c\u6d88\u8017\u201d/\u201c\u6bdb\u5229\u201d\u52a8\u6001\u5217",
         )
 
     def _validate_estimate_workbook(self, file_path: str) -> None:
@@ -368,38 +395,56 @@ class CalculationService:
 
         source_sheet_df = pd.read_excel(file_path, sheet_name=estimate_sheet_name)
         column_lookup = {str(col).strip(): col for col in source_sheet_df.columns.tolist()}
-        missing_columns = [col for col in self._ESTIMATE_REQUIRED_COLUMNS if col not in column_lookup]
+        normalized_columns = list(column_lookup.keys())
+        required_column_names = {
+            logical_name: self._find_estimate_required_column(normalized_columns, logical_name)
+            for logical_name in self._ESTIMATE_REQUIRED_COLUMN_ALIASES
+        }
+        missing_columns = [
+            "/".join(self._ESTIMATE_REQUIRED_COLUMN_ALIASES[logical_name])
+            for logical_name, column_name in required_column_names.items()
+            if not column_name
+        ]
         if missing_columns:
             raise HTTPException(
                 status_code=400,
                 detail=f"\u9884\u4f30\u6a21\u677f\u5de5\u4f5c\u8868 {estimate_sheet_name} \u7f3a\u5c11\u5fc5\u9700\u5217\uff1a{'\u3001'.join(missing_columns)}",
             )
 
-        normalized_columns = list(column_lookup.keys())
+        client_column_name = required_column_names["母公司"]
+        media_column_name = required_column_names["媒介"]
+        service_type_column_name = required_column_names["服务类型"]
         consumption_column_name = self._find_estimate_dynamic_column(
             normalized_columns,
-            include_words=("\u6d88\u8017", "\u9884\u4f30"),
+            include_words=("\u6d88\u8017",),
+            exclude_words=("\u6bdb\u5229",),
         )
         gross_profit_column_name = self._find_estimate_dynamic_column(
             normalized_columns,
-            include_words=("\u6bdb\u5229", "\u9884\u4f30"),
+            include_words=("\u6bdb\u5229",),
+            exclude_words=("\u6d88\u8017",),
         )
+        if not service_type_column_name:
+            raise HTTPException(
+                status_code=400,
+                detail=f"\u9884\u4f30\u6a21\u677f\u5de5\u4f5c\u8868 {estimate_sheet_name} \u7f3a\u5c11\u5fc5\u9700\u5217\uff1a\u670d\u52a1\u7c7b\u578b/\u6295\u653e\u7c7b\u578b",
+            )
         if not consumption_column_name:
             raise HTTPException(
                 status_code=400,
-                detail=f"\u9884\u4f30\u6a21\u677f\u5de5\u4f5c\u8868 {estimate_sheet_name} \u7f3a\u5c11\u201c\u6d88\u8017\u9884\u4f30\u201d\u52a8\u6001\u5217",
+                detail=f"\u9884\u4f30\u6a21\u677f\u5de5\u4f5c\u8868 {estimate_sheet_name} \u7f3a\u5c11\u201c\u6d88\u8017\u201d\u52a8\u6001\u5217",
             )
         if not gross_profit_column_name:
             raise HTTPException(
                 status_code=400,
-                detail=f"\u9884\u4f30\u6a21\u677f\u5de5\u4f5c\u8868 {estimate_sheet_name} \u7f3a\u5c11\u201c\u6bdb\u5229\u9884\u4f30\u201d\u52a8\u6001\u5217",
+                detail=f"\u9884\u4f30\u6a21\u677f\u5de5\u4f5c\u8868 {estimate_sheet_name} \u7f3a\u5c11\u201c\u6bdb\u5229\u201d\u52a8\u6001\u5217",
             )
 
         rows = pd.DataFrame(
             {
-                "_source_client": source_sheet_df[column_lookup["\u6bcd\u516c\u53f8"]].map(self._normalize_estimate_text),
-                "_service_type": source_sheet_df[column_lookup["\u6295\u653e\u7c7b\u578b"]].map(self._normalize_estimate_service_type),
-                "\u5a92\u4ecb": source_sheet_df[column_lookup["\u5a92\u4ecb"]].map(self._normalize_estimate_text),
+                "_source_client": source_sheet_df[column_lookup[client_column_name]].map(self._normalize_estimate_text),
+                "_service_type": source_sheet_df[column_lookup[service_type_column_name]].map(self._normalize_estimate_service_type),
+                "\u5a92\u4ecb": source_sheet_df[column_lookup[media_column_name]].map(self._normalize_estimate_text),
                 "_estimate_consumption": pd.to_numeric(
                     source_sheet_df[column_lookup[consumption_column_name]],
                     errors="coerce",

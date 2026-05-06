@@ -283,3 +283,70 @@ def test_process_with_client_account_blank_currency_defaults_to_usd(tmp_path, mo
 
     result = svc.process_local_file(str(src), src.name)
     assert result["status"] == "ok"
+
+
+def test_validate_estimate_workbook_accepts_service_type_and_summary_headers(tmp_path):
+    src = tmp_path / "2026年4月预估模板.xlsx"
+    _write_workbook(
+        src,
+        {
+            "Sheet3": [
+                {
+                    "母公司": "Acmer",
+                    "媒介": "Facebook",
+                    "服务类型": "代投",
+                    "求和项:26.4月消耗（04.01-04.30）": 21690.73,
+                    "求和项:自然季度Q2预估毛利（04.01-04.30）": 542.27,
+                }
+            ]
+        },
+    )
+
+    svc = CalculationService()
+    svc._validate_estimate_workbook(str(src))
+
+
+def test_process_estimate_with_service_type_and_summary_headers(tmp_path, monkeypatch):
+    uploads_dir = tmp_path / "uploads"
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+
+    src = tmp_path / "2026年4月预估模板.xlsx"
+    _write_workbook(
+        src,
+        {
+            "Sheet3": [
+                {
+                    "母公司": "Acmer",
+                    "媒介": "Facebook",
+                    "服务类型": "代投",
+                    "求和项:26.4月消耗（04.01-04.30）": 21690.73,
+                    "求和项:自然季度Q2预估毛利（04.01-04.30）": 542.27,
+                }
+            ]
+        },
+    )
+
+    svc = CalculationService()
+    monkeypatch.setattr(svc, "_get_upload_dir", lambda: uploads_dir)
+
+    def fake_calculate_service_fees(*_args, **_kwargs):
+        out_path = uploads_dir / "temp_result.xlsx"
+        pd.DataFrame(
+            [
+                {
+                    "母公司": "Acmer",
+                    "服务类型": "代投",
+                    "媒介": "Facebook",
+                    "服务费": 100,
+                    "固定服务费": 0,
+                }
+            ]
+        ).to_excel(out_path, index=False)
+        return str(out_path)
+
+    monkeypatch.setattr("api.services.calculation_service.calculate_service_fees", fake_calculate_service_fees)
+
+    result = svc.process_estimate_local_file(str(src), src.name)
+
+    assert result["status"] == "ok"
+    assert result["output_file"].endswith("_estimate_results.xlsx")
