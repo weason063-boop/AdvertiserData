@@ -286,7 +286,7 @@ def test_process_with_client_account_blank_currency_defaults_to_usd(tmp_path, mo
 
 
 def test_validate_estimate_workbook_accepts_service_type_and_summary_headers(tmp_path):
-    src = tmp_path / "2026年4月预估模板.xlsx"
+    src = tmp_path / "投放与毛利预估-导入.xlsx"
     _write_workbook(
         src,
         {
@@ -310,7 +310,7 @@ def test_process_estimate_with_service_type_and_summary_headers(tmp_path, monkey
     uploads_dir = tmp_path / "uploads"
     uploads_dir.mkdir(parents=True, exist_ok=True)
 
-    src = tmp_path / "2026年4月预估模板.xlsx"
+    src = tmp_path / "投放与毛利预估-导入.xlsx"
     _write_workbook(
         src,
         {
@@ -328,8 +328,10 @@ def test_process_estimate_with_service_type_and_summary_headers(tmp_path, monkey
 
     svc = CalculationService()
     monkeypatch.setattr(svc, "_get_upload_dir", lambda: uploads_dir)
+    captured_kwargs = {}
 
     def fake_calculate_service_fees(*_args, **_kwargs):
+        captured_kwargs.update(_kwargs)
         out_path = uploads_dir / "temp_result.xlsx"
         pd.DataFrame(
             [
@@ -350,3 +352,12 @@ def test_process_estimate_with_service_type_and_summary_headers(tmp_path, monkey
 
     assert result["status"] == "ok"
     assert result["output_file"].endswith("_estimate_results.xlsx")
+    assert captured_kwargs["calculation_date"] == "2026-04"
+
+
+def test_parse_estimate_month_from_two_digit_dynamic_consumption_column():
+    svc = CalculationService()
+
+    assert svc._parse_month_from_estimate_column("求和项:26.5月消耗") == "2026-05"
+    assert svc._parse_month_from_estimate_column("求和项:26.4月消耗（04.01-04.30）") == "2026-04"
+    assert svc._parse_month_from_estimate_column("求和项:2026年4月消耗") == "2026-04"

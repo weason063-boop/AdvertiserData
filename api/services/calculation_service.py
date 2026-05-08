@@ -313,6 +313,29 @@ class CalculationService:
         candidates.sort(reverse=True)
         return candidates[0][2]
 
+    def _parse_month_from_estimate_column(self, column_name: str | None) -> str | None:
+        text = self._normalize_estimate_text(column_name)
+        if not text:
+            return None
+
+        patterns = [
+            r"(?<!\d)(20\d{2})\s*年\s*(\d{1,2})\s*月",
+            r"(?<!\d)(20\d{2})[._\-\s]+(\d{1,2})\s*月",
+            r"(?<!\d)(\d{2})\s*年\s*(\d{1,2})\s*月",
+            r"(?<!\d)(\d{2})[._\-\s]+(\d{1,2})\s*月",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if not match:
+                continue
+            year = int(match.group(1))
+            month = int(match.group(2))
+            if year < 100:
+                year += 2000
+            if 2000 <= year <= 2099 and 1 <= month <= 12:
+                return f"{year}-{month:02d}"
+        return None
+
     def _find_estimate_required_column(self, columns: list[str], logical_name: str) -> str | None:
         aliases = self._ESTIMATE_REQUIRED_COLUMN_ALIASES.get(logical_name, (logical_name,))
         column_set = {str(column).strip() for column in columns}
@@ -386,7 +409,7 @@ class CalculationService:
     def _prepare_estimate_calculation_input(
         self,
         file_path: str,
-    ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str, str, str]:
+    ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str, str, str, str | None]:
         workbook = self._open_excel_workbook(file_path, context="\u9884\u4f30\u6a21\u677f\u4e0a\u4f20\u6587\u4ef6")
         try:
             estimate_sheet_name = self._resolve_estimate_sheet_name(workbook)
@@ -439,6 +462,7 @@ class CalculationService:
                 status_code=400,
                 detail=f"\u9884\u4f30\u6a21\u677f\u5de5\u4f5c\u8868 {estimate_sheet_name} \u7f3a\u5c11\u201c\u6bdb\u5229\u201d\u52a8\u6001\u5217",
             )
+        estimate_calculation_date = self._parse_month_from_estimate_column(consumption_column_name)
 
         rows = pd.DataFrame(
             {
@@ -522,6 +546,7 @@ class CalculationService:
             consumption_column_name,
             gross_profit_column_name,
             estimate_sheet_name,
+            estimate_calculation_date,
         )
 
     def _build_estimate_sheet2_output(
@@ -1322,8 +1347,9 @@ class CalculationService:
         require_fx_snapshot: bool,
         exchange_context: dict[str, Any] | None = None,
         output_path: str | None = None,
+        calculation_date_override: str | None = None,
     ) -> str:
-        month_hint = self._parse_month_from_filename(original_filename)
+        month_hint = calculation_date_override or self._parse_month_from_filename(original_filename)
         calculation_date = month_hint or None
 
         if exchange_context is None:
@@ -1443,6 +1469,7 @@ class CalculationService:
                 consumption_column_name,
                 gross_profit_column_name,
                 estimate_sheet_name,
+                estimate_calculation_date,
             ) = self._prepare_estimate_calculation_input(file_path)
             upload_dir = self._get_upload_dir()
             temp_id = uuid.uuid4().hex
@@ -1457,6 +1484,7 @@ class CalculationService:
                 require_fx_snapshot=False,
                 exchange_context={"hangseng_today": {}},
                 output_path=str(temp_output),
+                calculation_date_override=estimate_calculation_date,
             )
 
             result_df = pd.read_excel(output_file)
