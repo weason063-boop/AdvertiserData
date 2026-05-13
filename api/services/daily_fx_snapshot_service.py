@@ -62,6 +62,7 @@ class DailyFxSnapshotService:
     def _default_state(self) -> dict[str, Any]:
         return {
             "snapshots": {},
+            "monthly_locks": {},
         }
 
     def _load_state_unlocked(self) -> dict[str, Any]:
@@ -86,6 +87,15 @@ class DailyFxSnapshotService:
                     continue
                 normalized[key] = value
             state["snapshots"] = normalized
+
+        monthly_locks = payload.get("monthly_locks")
+        if isinstance(monthly_locks, dict):
+            normalized_locks = {}
+            for key, value in monthly_locks.items():
+                if not isinstance(key, str) or not isinstance(value, dict):
+                    continue
+                normalized_locks[key] = value
+            state["monthly_locks"] = normalized_locks
 
         return state
 
@@ -126,6 +136,17 @@ class DailyFxSnapshotService:
             snapshot = state["snapshots"].get(self._today_key())
             return snapshot if isinstance(snapshot, dict) else None
 
+    def get_snapshot(self, rate_date: str) -> dict[str, Any] | None:
+        try:
+            normalized_date = datetime.strptime(str(rate_date or "").strip(), "%Y-%m-%d").strftime("%Y-%m-%d")
+        except Exception:
+            return None
+
+        with self._lock:
+            state = self._load_state_unlocked()
+            snapshot = state["snapshots"].get(normalized_date)
+            return snapshot.copy() if isinstance(snapshot, dict) else None
+
     def get_today_snapshot_payload(self) -> dict[str, Any]:
         with self._lock:
             state = self._load_state_unlocked()
@@ -137,6 +158,65 @@ class DailyFxSnapshotService:
                 "has_snapshot": has_snapshot,
                 "snapshot": snapshot if has_snapshot else None,
             }
+
+    @staticmethod
+    def _normalize_month_key(month: str) -> str:
+        text = str(month or "").strip()
+        try:
+            return datetime.strptime(text, "%Y-%m").strftime("%Y-%m")
+        except Exception as exc:
+            raise ValueError(f"Invalid month: {month}") from exc
+
+    def get_month_lock(self, month: str) -> dict[str, Any] | None:
+        month_key = self._normalize_month_key(month)
+        with self._lock:
+            state = self._load_state_unlocked()
+            snapshot = state["monthly_locks"].get(month_key)
+            return snapshot.copy() if isinstance(snapshot, dict) else None
+
+    def lock_month_snapshot(
+        self,
+        month: str,
+        snapshot: dict[str, Any],
+        *,
+        actor: str = "system",
+        overwrite: bool = False,
+    ) -> dict[str, Any]:
+        month_key = self._normalize_month_key(month)
+        if not isinstance(snapshot, dict) or not snapshot:
+            raise ValueError("snapshot must not be empty")
+
+        now = self._now()
+        with self._lock:
+            state = self._load_state_unlocked()
+            existing = state["monthly_locks"].get(month_key)
+            if isinstance(existing, dict) and not overwrite:
+                return existing.copy()
+
+            locked_snapshot = snapshot.copy()
+            locked_snapshot.update(
+                {
+                    "locked_month": month_key,
+                    "locked_at": now.strftime("%Y-%m-%d %H:%M:%S"),
+                    "locked_by": actor,
+                }
+            )
+            state["monthly_locks"][month_key] = locked_snapshot
+            self._save_state_unlocked(state)
+
+        self._audit(
+            action="lock_month_snapshot",
+            actor=actor,
+            status="success",
+            rate_date=str(locked_snapshot.get("rate_date") or month_key),
+            metadata={
+                "month": month_key,
+                "source": locked_snapshot.get("source"),
+                "pub_time": locked_snapshot.get("pub_time"),
+                "overwrite": overwrite,
+            },
+        )
+        return locked_snapshot.copy()
 
     def list_snapshots(self, limit: int = 14) -> list[dict[str, Any]]:
         safe_limit = max(1, min(90, int(limit or 14)))
@@ -152,6 +232,23 @@ class DailyFxSnapshotService:
 
         items.sort(key=lambda item: str(item.get("date") or ""), reverse=True)
         return items[:safe_limit]
+
+    def list_month_snapshots(self, month: str) -> list[dict[str, Any]]:
+        month_key = self._normalize_month_key(month)
+        with self._lock:
+            state = self._load_state_unlocked()
+            items = []
+            for date_key, snapshot in state["snapshots"].items():
+                if not isinstance(date_key, str) or not date_key.startswith(f"{month_key}-"):
+                    continue
+                if not isinstance(snapshot, dict):
+                    continue
+                row = {"date": str(date_key)}
+                row.update(snapshot)
+                items.append(row)
+
+        items.sort(key=lambda item: str(item.get("date") or ""), reverse=True)
+        return items
 
     def upsert_snapshot(
         self,

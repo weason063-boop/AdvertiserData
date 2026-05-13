@@ -775,7 +775,7 @@ class TestDashboardService:
 
         assert billing_row is None
 
-    def test_backfill_detail_stats_from_results_rebuilds_month_snapshots(self, db_session, monkeypatch, tmp_path):
+    def test_backfill_detail_stats_from_results_preserves_historical_month_snapshots(self, db_session, monkeypatch, tmp_path):
         service = CalculationService()
         source = tmp_path / "2026年3月测试_results.xlsx"
 
@@ -878,10 +878,12 @@ class TestDashboardService:
         )
 
         assert {(row.month, row.client_name) for row in stats_rows} == {
+            ("2026-01", "Stale"),
             ("2026-03", "Alpha"),
             ("2026-03", "Beta"),
         }
         assert {(row.month, row.client_name) for row in detail_rows} == {
+            ("2026-01", "Stale"),
             ("2026-03", "Alpha"),
             ("2026-03", "Beta"),
         }
@@ -892,6 +894,7 @@ class TestDashboardService:
             .all()
         )
         assert [(row.month, row.total_consumption, row.total_service_fee) for row in billing_rows] == [
+            ("2026-01", 999.0, 99.0),
             ("2026-03", 150.0, 15.0),
         ]
 
@@ -903,6 +906,7 @@ class TestDashboardService:
     ):
         service = CalculationService()
         source = tmp_path / "system_20260424100458247492_44cdd405_2026年3月_results.xlsx"
+        legacy_source = tmp_path / "2026年2月美金_results.xlsx"
         estimate = tmp_path / "system_20260424100458247493_44cdd405_invalid_estimate_results.xlsx"
 
         hidden_df = pd.DataFrame(
@@ -937,6 +941,37 @@ class TestDashboardService:
         workbook.save(source)
         workbook.close()
 
+        legacy_hidden_df = pd.DataFrame(
+            [
+                {
+                    "母公司": "Legacy",
+                    "媒介": "Google",
+                    "预付/后付": "预付",
+                    "服务类型": "代投",
+                    "流水消耗": 0,
+                    "代投消耗": 70,
+                    "汇总纯花费": 70,
+                    "服务费": 7,
+                    "固定服务费": 0,
+                    "Coupon": 0,
+                    "来源Sheet": "2026年2月美金",
+                    "月份归属": None,
+                }
+            ]
+        )
+        with pd.ExcelWriter(legacy_source) as writer:
+            pd.DataFrame([{"母公司": "Visible", "媒介": "Google"}]).to_excel(
+                writer,
+                index=False,
+                sheet_name="2026年2月美金",
+            )
+            legacy_hidden_df.to_excel(writer, index=False, sheet_name=service._RESULT_DATA_SHEET_NAME)
+
+        workbook = load_workbook(legacy_source)
+        workbook[service._RESULT_DATA_SHEET_NAME].sheet_state = "hidden"
+        workbook.save(legacy_source)
+        workbook.close()
+
         with pd.ExcelWriter(estimate) as writer:
             pd.DataFrame([{"foo": 1}]).to_excel(writer, index=False, sheet_name="Sheet1")
 
@@ -963,6 +998,7 @@ class TestDashboardService:
             .all()
         )
         assert [(row.month, row.total_consumption, row.total_service_fee) for row in billing_rows] == [
+            ("2026-02", 70.0, 7.0),
             ("2026-03", 100.0, 10.0),
         ]
 
@@ -1023,14 +1059,19 @@ class TestDashboardService:
         assert [(row.month, row.total_consumption, row.total_service_fee) for row in billing_rows] == [
             ("2026-01", 999.0, 99.0),
         ]
+        assert not service._get_dashboard_backfill_signature_path().exists()
 
-    def test_get_main_stats_triggers_result_backfill_sync(self, db_session, monkeypatch):
+    def test_get_main_stats_requests_result_backfill_without_blocking(self, db_session, monkeypatch):
         class DummyCalculationService:
             def __init__(self):
-                self.calls = 0
+                self.request_calls = 0
+
+            def request_dashboard_backfill_from_results(self, db=None):
+                self.request_calls += 1
+                return True
 
             def backfill_detail_stats_from_results(self, db=None):
-                self.calls += 1
+                raise AssertionError("Dashboard reads should not run Excel backfill inline")
 
         calc_service = DummyCalculationService()
         service = DashboardService(calculation_service=calc_service)
@@ -1040,7 +1081,7 @@ class TestDashboardService:
 
         payload = service.get_main_stats(db=db_session)
 
-        assert calc_service.calls == 1
+        assert calc_service.request_calls == 1
         assert payload["stats"]["month"] == "2026-03"
         assert payload["stats"]["consumption"] == 1000
         assert payload["stats"]["fee"] == 100

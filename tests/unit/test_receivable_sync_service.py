@@ -1,5 +1,7 @@
 from datetime import date, datetime, timedelta
 
+from openpyxl import load_workbook
+
 from api.models import FeishuReceivableBill
 from api.services.receivable_sync_service import (
     COMPLETED_APPROVAL_STATUS,
@@ -501,3 +503,88 @@ def test_list_bills_filters_by_flow_type(db_session):
     assert len(rows) == 1
     assert rows[0]["record_id"] == "client-advance"
     assert rows[0]["flow_type"] == "client_advance"
+
+
+def test_build_bills_export_contains_filtered_details_and_raw_fields(db_session):
+    synced_at = datetime.now()
+    db_session.add_all(
+        [
+            FeishuReceivableBill(
+                source_token="app",
+                table_id=BILL_SEND_TABLE_ID,
+                table_name="Bill Send",
+                record_id="alpha_1",
+                flow_type="bill_send",
+                source_id="SRC-001",
+                application_no="APP-001",
+                client_name="Alpha",
+                project_name="Project A",
+                owner_name="Ada",
+                approval_status="Pending",
+                approval_node="Collection",
+                currency="USD",
+                currency_code="USD",
+                amount=100,
+                outstanding_amount=100,
+                overdue_amount=100,
+                overdue_days=5,
+                due_date="2026-04-01",
+                due_date_text="2026-04-01",
+                is_active=True,
+                is_outstanding=True,
+                is_overdue=True,
+                raw_fields_json='{"飞书字段A": "原始值", "数字字段": 12}',
+                synced_at=synced_at,
+            ),
+            FeishuReceivableBill(
+                source_token="app",
+                table_id=CLIENT_ADVANCE_TABLE_ID,
+                table_name="Client Advance",
+                record_id="beta_1",
+                flow_type="client_advance",
+                client_name="Beta",
+                approval_status="Pending",
+                currency="USD",
+                currency_code="USD",
+                amount=200,
+                outstanding_amount=200,
+                overdue_amount=0,
+                overdue_days=0,
+                is_active=True,
+                is_outstanding=True,
+                is_overdue=False,
+                raw_fields_json='{"飞书字段A": "不应导出"}',
+                synced_at=synced_at,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    buffer, filename = ReceivableSyncService().build_bills_export(
+        status="overdue",
+        flow_type="bill_send",
+        db=db_session,
+    )
+
+    assert filename.startswith("receivables_overdue_bill_send_")
+    workbook = load_workbook(buffer)
+    assert workbook.sheetnames == ["应收明细", "飞书原始字段"]
+
+    detail_sheet = workbook["应收明细"]
+    detail_headers = [cell.value for cell in detail_sheet[1]]
+    detail_values = [cell.value for cell in detail_sheet[2]]
+    detail_row = dict(zip(detail_headers, detail_values))
+    assert detail_sheet.max_row == 2
+    assert detail_row["流程编号"] == "APP-001"
+    assert detail_row["流程类型"] == "账单发送"
+    assert detail_row["未回款金额"] == 100
+    assert detail_row["逾期金额"] == 100
+    assert detail_row["逾期"] == "是"
+
+    raw_sheet = workbook["飞书原始字段"]
+    raw_headers = [cell.value for cell in raw_sheet[1]]
+    raw_values = [cell.value for cell in raw_sheet[2]]
+    raw_row = dict(zip(raw_headers, raw_values))
+    assert raw_sheet.max_row == 2
+    assert raw_row["飞书字段A"] == "原始值"
+    assert raw_row["数字字段"] == 12

@@ -36,7 +36,19 @@ def build_cli_exchange_context(consumption_file: str, original_filename: str | N
     has_rmb_rows = svc._contains_rmb_consumption(consumption_file, month_hint=month_hint)
     has_eur_rows = svc._contains_eur_consumption(consumption_file, month_hint=month_hint)
     has_jpy_rows = svc._contains_jpy_consumption(consumption_file, month_hint=month_hint)
-    exchange_context = svc._build_daily_exchange_context(require_snapshot=has_rmb_rows or has_eur_rows or has_jpy_rows)
+    required_currencies = set()
+    if has_rmb_rows:
+        required_currencies.add("RMB")
+    if has_eur_rows:
+        required_currencies.add("EUR")
+    if has_jpy_rows:
+        required_currencies.add("JPY")
+    exchange_context = svc._build_locked_exchange_context(
+        require_snapshot=bool(required_currencies),
+        month_hint=month_hint,
+        actor="cli",
+        required_currencies=required_currencies,
+    )
     return month_hint or None, exchange_context
 
 

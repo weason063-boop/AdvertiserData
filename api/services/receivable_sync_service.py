@@ -4,9 +4,13 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime
+from io import BytesIO
 from typing import Any
 
 from dotenv import load_dotenv
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
 from sqlalchemy import desc, or_
 from sqlalchemy.orm import Session
 
@@ -37,6 +41,46 @@ class ReceivableTableConfig:
 
 
 class ReceivableSyncService:
+    _EXPORT_HEADER_FILL = PatternFill("solid", fgColor="1F4E78")
+    _EXPORT_HEADER_FONT = Font(color="FFFFFF", bold=True)
+    _EXPORT_LEFT = Alignment(horizontal="left", vertical="center")
+    _EXPORT_CENTER = Alignment(horizontal="center", vertical="center")
+    _EXPORT_BORDER = Border(
+        left=Side(style="thin", color="D1D5DB"),
+        right=Side(style="thin", color="D1D5DB"),
+        top=Side(style="thin", color="D1D5DB"),
+        bottom=Side(style="thin", color="D1D5DB"),
+    )
+    _EXPORT_DETAIL_COLUMNS: tuple[tuple[str, str], ...] = (
+        ("table_name", "来源表"),
+        ("flow_type_label", "流程类型"),
+        ("record_id", "飞书记录ID"),
+        ("application_no", "流程编号"),
+        ("source_id", "SourceID"),
+        ("client_name", "客户"),
+        ("project_name", "项目"),
+        ("business_type", "业务类型"),
+        ("department", "部门"),
+        ("owner_name", "负责人"),
+        ("bill_type", "账单类型"),
+        ("approval_status", "审批状态"),
+        ("approval_node", "当前节点"),
+        ("currency", "币种"),
+        ("currency_code", "币种代码"),
+        ("amount", "流程金额"),
+        ("outstanding_amount", "未回款金额"),
+        ("overdue_amount", "逾期金额"),
+        ("overdue_days", "逾期天数"),
+        ("due_date", "回款截止日"),
+        ("due_date_text", "回款截止日原值"),
+        ("is_active_label", "有效记录"),
+        ("is_outstanding_label", "未回款"),
+        ("is_overdue_label", "逾期"),
+        ("initiated_at", "发起时间"),
+        ("completed_at", "完成时间"),
+        ("synced_at", "同步时间"),
+    )
+
     def __init__(self):
         self.app_id = os.getenv("FEISHU_APP_ID", "")
         self.app_secret = os.getenv("FEISHU_APP_SECRET", "")
@@ -162,27 +206,51 @@ class ReceivableSyncService:
             should_close = True
         try:
             safe_limit = max(1, min(500, int(limit or 100)))
-            query = self._scoped_query(db).filter(FeishuReceivableBill.is_active.is_(True))
-            query = query.filter(
-                or_(
-                    FeishuReceivableBill.approval_status.is_(None),
-                    FeishuReceivableBill.approval_status != COMPLETED_APPROVAL_STATUS,
-                )
-            )
-            if client_name:
-                query = query.filter(FeishuReceivableBill.client_name == str(client_name).strip())
-            if flow_type in {"bill_send", "client_advance"}:
-                query = query.filter(FeishuReceivableBill.flow_type == flow_type)
-            if status == "overdue":
-                query = query.filter(FeishuReceivableBill.is_overdue.is_(True))
-                query = query.order_by(desc(FeishuReceivableBill.overdue_amount), desc(FeishuReceivableBill.overdue_days))
-            elif status == "outstanding":
-                query = query.filter(FeishuReceivableBill.is_outstanding.is_(True))
-                query = query.order_by(desc(FeishuReceivableBill.outstanding_amount), desc(FeishuReceivableBill.overdue_days))
-            else:
-                query = query.order_by(desc(FeishuReceivableBill.outstanding_amount), desc(FeishuReceivableBill.overdue_amount))
-            rows = query.limit(safe_limit).all()
+            rows = self._filtered_bills_query(
+                db,
+                status=status,
+                flow_type=flow_type,
+                client_name=client_name,
+            ).limit(safe_limit).all()
             return [self._serialize_row(row) for row in rows]
+        finally:
+            if should_close:
+                db.close()
+
+    def build_bills_export(
+        self,
+        *,
+        status: str = "all",
+        flow_type: str | None = None,
+        client_name: str | None = None,
+        limit: int = 50000,
+        db: Session | None = None,
+    ) -> tuple[BytesIO, str]:
+        should_close = False
+        if db is None:
+            ensure_feishu_receivable_bills_table()
+            db = SessionLocal()
+            should_close = True
+        try:
+            safe_limit = max(1, min(50000, int(limit or 50000)))
+            rows = self._filtered_bills_query(
+                db,
+                status=status,
+                flow_type=flow_type,
+                client_name=client_name,
+            ).limit(safe_limit).all()
+
+            workbook = Workbook()
+            detail_sheet = workbook.active
+            detail_sheet.title = "应收明细"
+            self._write_export_detail_sheet(detail_sheet, rows)
+            self._write_export_raw_fields_sheet(workbook.create_sheet("飞书原始字段"), rows)
+
+            buffer = BytesIO()
+            workbook.save(buffer)
+            buffer.seek(0)
+            filename = self._build_export_filename(status=status, flow_type=flow_type)
+            return buffer, filename
         finally:
             if should_close:
                 db.close()
@@ -286,6 +354,191 @@ class ReceivableSyncService:
         if latest_source and latest_source[0]:
             query = query.filter(FeishuReceivableBill.source_token == latest_source[0])
         return query
+
+    def _filtered_bills_query(
+        self,
+        db: Session,
+        *,
+        status: str = "overdue",
+        flow_type: str | None = None,
+        client_name: str | None = None,
+    ):
+        query = self._scoped_query(db).filter(FeishuReceivableBill.is_active.is_(True))
+        query = query.filter(
+            or_(
+                FeishuReceivableBill.approval_status.is_(None),
+                FeishuReceivableBill.approval_status != COMPLETED_APPROVAL_STATUS,
+            )
+        )
+        if client_name:
+            query = query.filter(FeishuReceivableBill.client_name == str(client_name).strip())
+        if flow_type in {"bill_send", "client_advance"}:
+            query = query.filter(FeishuReceivableBill.flow_type == flow_type)
+        if status == "overdue":
+            return query.filter(FeishuReceivableBill.is_overdue.is_(True)).order_by(
+                desc(FeishuReceivableBill.overdue_amount),
+                desc(FeishuReceivableBill.overdue_days),
+            )
+        if status == "outstanding":
+            return query.filter(FeishuReceivableBill.is_outstanding.is_(True)).order_by(
+                desc(FeishuReceivableBill.outstanding_amount),
+                desc(FeishuReceivableBill.overdue_days),
+            )
+        return query.order_by(
+            desc(FeishuReceivableBill.outstanding_amount),
+            desc(FeishuReceivableBill.overdue_amount),
+            desc(FeishuReceivableBill.overdue_days),
+        )
+
+    def _write_export_detail_sheet(self, sheet, rows: list[FeishuReceivableBill]) -> None:
+        headers = [label for _key, label in self._EXPORT_DETAIL_COLUMNS]
+        sheet.append(headers)
+        for row in rows:
+            payload = self._export_detail_payload(row)
+            sheet.append([payload.get(key, "") for key, _label in self._EXPORT_DETAIL_COLUMNS])
+        self._style_export_sheet(
+            sheet,
+            money_headers={"流程金额", "未回款金额", "逾期金额"},
+            wrap_headers={"当前节点", "项目"},
+        )
+
+    def _write_export_raw_fields_sheet(self, sheet, rows: list[FeishuReceivableBill]) -> None:
+        raw_payloads = [self._raw_fields_payload(row) for row in rows]
+        raw_keys = sorted({key for payload in raw_payloads for key in payload})
+        meta_columns = [
+            ("table_name", "来源表"),
+            ("flow_type_label", "流程类型"),
+            ("record_id", "飞书记录ID"),
+            ("application_no", "流程编号"),
+            ("client_name", "客户"),
+            ("synced_at", "同步时间"),
+        ]
+        headers = [label for _key, label in meta_columns] + raw_keys
+        sheet.append(headers)
+        for row, raw_payload in zip(rows, raw_payloads):
+            meta = self._export_detail_payload(row)
+            sheet.append(
+                [meta.get(key, "") for key, _label in meta_columns]
+                + [self._render_export_value(raw_payload.get(key)) for key in raw_keys]
+            )
+        self._style_export_sheet(sheet, wrap_headers=set(raw_keys))
+
+    def _style_export_sheet(
+        self,
+        sheet,
+        *,
+        money_headers: set[str] | None = None,
+        wrap_headers: set[str] | None = None,
+    ) -> None:
+        money_headers = money_headers or set()
+        wrap_headers = wrap_headers or set()
+        sheet.freeze_panes = "A2"
+        sheet.auto_filter.ref = sheet.dimensions
+        for cell in sheet[1]:
+            cell.fill = self._EXPORT_HEADER_FILL
+            cell.font = self._EXPORT_HEADER_FONT
+            cell.alignment = self._EXPORT_CENTER
+            cell.border = self._EXPORT_BORDER
+
+        header_lookup = {cell.column: str(cell.value or "") for cell in sheet[1]}
+        for row in sheet.iter_rows(min_row=2):
+            for cell in row:
+                header = header_lookup.get(cell.column, "")
+                cell.border = self._EXPORT_BORDER
+                cell.alignment = Alignment(
+                    horizontal="left",
+                    vertical="center",
+                    wrap_text=header in wrap_headers,
+                )
+                if header in money_headers:
+                    cell.number_format = '#,##0.00;[Red]-#,##0.00;-'
+                elif header == "逾期天数":
+                    cell.number_format = '0'
+
+        for column_cells in sheet.columns:
+            header = str(column_cells[0].value or "")
+            max_length = max(
+                len(str(cell.value or "")) if cell.value is not None else 0
+                for cell in column_cells
+            )
+            width = min(max(max_length + 2, 10), 42)
+            if header in wrap_headers:
+                width = min(max(width, 22), 50)
+            sheet.column_dimensions[get_column_letter(column_cells[0].column)].width = width
+
+    def _export_detail_payload(self, row: FeishuReceivableBill) -> dict[str, Any]:
+        return {
+            "table_name": row.table_name,
+            "flow_type_label": self._flow_type_label(row.flow_type),
+            "record_id": row.record_id,
+            "application_no": row.application_no,
+            "source_id": row.source_id,
+            "client_name": row.client_name,
+            "project_name": row.project_name,
+            "business_type": row.business_type,
+            "department": row.department,
+            "owner_name": row.owner_name,
+            "bill_type": row.bill_type,
+            "approval_status": row.approval_status,
+            "approval_node": row.approval_node,
+            "currency": row.currency,
+            "currency_code": row.currency_code,
+            "amount": float(row.amount or 0.0),
+            "outstanding_amount": float(row.outstanding_amount or 0.0),
+            "overdue_amount": float(row.overdue_amount or 0.0),
+            "overdue_days": int(row.overdue_days or 0),
+            "due_date": row.due_date,
+            "due_date_text": row.due_date_text,
+            "is_active_label": self._yes_no(row.is_active),
+            "is_outstanding_label": self._yes_no(row.is_outstanding),
+            "is_overdue_label": self._yes_no(row.is_overdue),
+            "initiated_at": self._format_export_datetime(row.initiated_at),
+            "completed_at": self._format_export_datetime(row.completed_at),
+            "synced_at": self._format_export_datetime(row.synced_at),
+        }
+
+    @staticmethod
+    def _raw_fields_payload(row: FeishuReceivableBill) -> dict[str, Any]:
+        try:
+            payload = json.loads(row.raw_fields_json or "{}")
+        except (TypeError, json.JSONDecodeError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    @staticmethod
+    def _render_export_value(value: Any) -> Any:
+        if value is None:
+            return ""
+        if isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, (date, datetime)):
+            return value.isoformat()
+        return json.dumps(value, ensure_ascii=False, default=str)
+
+    @staticmethod
+    def _format_export_datetime(value: datetime | None) -> str:
+        if not value:
+            return ""
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+
+    @staticmethod
+    def _yes_no(value: Any) -> str:
+        return "是" if bool(value) else "否"
+
+    @staticmethod
+    def _flow_type_label(flow_type: str | None) -> str:
+        if flow_type == "bill_send":
+            return "账单发送"
+        if flow_type == "client_advance":
+            return "客户垫付"
+        return str(flow_type or "")
+
+    @staticmethod
+    def _build_export_filename(*, status: str, flow_type: str | None) -> str:
+        status_label = status if status in {"overdue", "outstanding", "all"} else "all"
+        flow_label = flow_type if flow_type in {"bill_send", "client_advance"} else "all"
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return f"receivables_{status_label}_{flow_label}_{timestamp}.xlsx"
 
     def _build_row(
         self,

@@ -31,6 +31,7 @@ node_modules/
 
 # Build output
 web/dist/
+output/
 
 # Backups
 *.backup-*
@@ -69,6 +70,7 @@ logs/
 .agent/
 .agents/
 .gemini/
+.playwright-cli/
 
 # Misc
 frontend-design/

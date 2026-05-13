@@ -65,6 +65,15 @@ class DashboardService:
     def _ensure_detail_stats_synced(self, db: Session) -> None:
         if os.getenv("TESTING") == "True":
             return
+        request_background_sync = getattr(
+            self._calculation_service,
+            "request_dashboard_backfill_from_results",
+            None,
+        )
+        if callable(request_background_sync):
+            request_background_sync(db=db)
+            return
+
         with self._detail_sync_lock:
             self._calculation_service.backfill_detail_stats_from_results(db=db)
 

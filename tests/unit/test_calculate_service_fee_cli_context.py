@@ -12,7 +12,11 @@ def test_cli_context_skips_snapshot_for_usd_only(monkeypatch):
     monkeypatch.setattr(CalculationService, "_contains_rmb_consumption", lambda self, _path, month_hint=None: False)
     monkeypatch.setattr(CalculationService, "_contains_eur_consumption", lambda self, _path, month_hint=None: False)
     monkeypatch.setattr(CalculationService, "_contains_jpy_consumption", lambda self, _path, month_hint=None: False)
-    monkeypatch.setattr(CalculationService, "_build_daily_exchange_context", lambda self, require_snapshot: {"hangseng_today": {}})
+    monkeypatch.setattr(
+        CalculationService,
+        "_build_locked_exchange_context",
+        lambda self, *, require_snapshot, month_hint, actor, required_currencies=None: {"hangseng_today": {}},
+    )
 
     month, context = build_cli_exchange_context("dummy.xlsx", "2026-01-consumption.xlsx")
 
@@ -26,11 +30,21 @@ def test_cli_context_reports_missing_daily_snapshot(monkeypatch):
     monkeypatch.setattr(CalculationService, "_contains_eur_consumption", lambda self, _path, month_hint=None: False)
     monkeypatch.setattr(CalculationService, "_contains_jpy_consumption", lambda self, _path, month_hint=None: True)
 
-    def _raise_missing(self, require_snapshot: bool):
+    def _raise_missing(
+        self,
+        *,
+        require_snapshot: bool,
+        month_hint: str | None,
+        actor: str,
+        required_currencies=None,
+    ):
         assert require_snapshot is True
+        assert month_hint == "2026-01"
+        assert actor == "cli"
+        assert required_currencies == {"JPY"}
         raise HTTPException(status_code=400, detail="今日恒生汇率快照尚未生效")
 
-    monkeypatch.setattr(CalculationService, "_build_daily_exchange_context", _raise_missing)
+    monkeypatch.setattr(CalculationService, "_build_locked_exchange_context", _raise_missing)
 
     with pytest.raises(HTTPException) as exc:
         build_cli_exchange_context("dummy.xlsx", "2026-01-consumption.xlsx")
@@ -46,8 +60,8 @@ def test_cli_context_collects_rmb_and_jpy_snapshot(monkeypatch):
     monkeypatch.setattr(CalculationService, "_contains_jpy_consumption", lambda self, _path, month_hint=None: True)
     monkeypatch.setattr(
         CalculationService,
-        "_build_daily_exchange_context",
-        lambda self, require_snapshot: {
+        "_build_locked_exchange_context",
+        lambda self, *, require_snapshot, month_hint, actor, required_currencies=None: {
             "hangseng_today": {
                 "cny_tt_buy": 1.1,
                 "eur_tt_buy": 9.0,

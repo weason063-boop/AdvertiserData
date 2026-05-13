@@ -64,14 +64,14 @@ export function SidebarNav({
         onClick={() => onSwitchTab('results')}
       >
         <FileText size={18} />
-        <span>计算结果</span>
+        <span>月度消耗</span>
       </button>
       <button
         className={`nav-item ${activeTab === 'estimateResults' ? 'active' : ''}`}
         onClick={() => onSwitchTab('estimateResults')}
       >
         <FileText size={18} />
-        <span>预估结果</span>
+        <span>预估消耗</span>
       </button>
       {canViewTaskHistory && (
         <button

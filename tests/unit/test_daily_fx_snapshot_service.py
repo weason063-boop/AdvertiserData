@@ -95,6 +95,35 @@ def test_list_snapshots_returns_sorted(tmp_path, monkeypatch):
     assert items[2]["date"] == "2026-03-14"
 
 
+def test_month_lock_reuses_existing_snapshot_without_overwrite(tmp_path, monkeypatch):
+    state_path = tmp_path / "hangseng_daily_fx_state.json"
+    service = DailyFxSnapshotService(state_path=state_path)
+    monkeypatch.setattr(service, "_now", _fixed_now)
+
+    snapshot = {
+        "rate_date": "2026-03-16",
+        "cny_tt_buy": 1.1,
+        "eur_tt_buy": 8.9,
+        "usd_tt_sell": 7.2,
+        "jpy_tt_sell": 0.05,
+        "usd_tt_buy": 7.1,
+        "source": "manual",
+        "pub_time": "2026-03-16 09:31:00",
+    }
+    first = service.lock_month_snapshot("2026-03", snapshot, actor="tester")
+    second = service.lock_month_snapshot(
+        "2026-03",
+        {**snapshot, "rate_date": "2026-03-17", "cny_tt_buy": 1.2},
+        actor="tester",
+    )
+
+    assert first["rate_date"] == "2026-03-16"
+    assert first["locked_month"] == "2026-03"
+    assert first["locked_by"] == "tester"
+    assert second["rate_date"] == "2026-03-16"
+    assert service.get_month_lock("2026-03")["cny_tt_buy"] == 1.1
+
+
 def test_save_state_retries_on_permission_error(tmp_path, monkeypatch):
     state_path = tmp_path / "hangseng_daily_fx_state.json"
     service = DailyFxSnapshotService(state_path=state_path)

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ComponentType } from 'react'
-import { AlertTriangle, Clock3, RefreshCw, WalletCards, X } from 'lucide-react'
+import { AlertTriangle, Clock3, Download, RefreshCw, WalletCards, X } from 'lucide-react'
 import {
   Bar,
   BarChart,
@@ -12,7 +12,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import { apiJson, isApiHttpError } from './apiClient'
+import { apiBlob, apiJson, isApiHttpError, parseDownloadFilename } from './apiClient'
 import type {
   ReceivableAgingBucket,
   ReceivableBillsResponse,
@@ -162,6 +162,7 @@ export function ReceivablesPanel({
   const [detailLoading, setDetailLoading] = useState(false)
   const [summaryDetailLoading, setSummaryDetailLoading] = useState(false)
   const [syncing, setSyncing] = useState(false)
+  const [exporting, setExporting] = useState(false)
 
   const loadData = async (nextMetric: ClientMetric = clientMetric) => {
     if (!active) return
@@ -262,6 +263,40 @@ export function ReceivablesPanel({
       onNotify(message, 'error')
     } finally {
       setSyncing(false)
+    }
+  }
+
+  const handleDownloadDetails = async () => {
+    setExporting(true)
+    try {
+      const query = new URLSearchParams({
+        status: 'all',
+        flow_type: 'all',
+        limit: '50000',
+      })
+      const { blob, res } = await apiBlob(`/api/feishu/receivables/export?${query.toString()}`)
+      const filename = parseDownloadFilename(
+        res.headers.get('content-disposition'),
+        'receivables_details.xlsx',
+      )
+      const url = window.URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = filename
+      document.body.appendChild(anchor)
+      anchor.click()
+      anchor.remove()
+      window.URL.revokeObjectURL(url)
+      onNotify('应收回款明细已开始下载', 'success')
+    } catch (error: unknown) {
+      if (isApiHttpError(error) && error.status === 401) {
+        onRequireAuth()
+        return
+      }
+      const message = error instanceof Error && error.message ? error.message : '应收回款明细下载失败'
+      onNotify(message, 'error')
+    } finally {
+      setExporting(false)
     }
   }
 
@@ -380,6 +415,10 @@ export function ReceivablesPanel({
     <section className="receivables-page">
       <div className="dashboard-control-wrap receivables-action-row">
         <span>同步 {syncedAt}</span>
+        <button className="btn-action secondary receivables-sync-btn" onClick={handleDownloadDetails} disabled={exporting || loading}>
+          <Download size={16} />
+          {exporting ? '下载中' : '下载明细'}
+        </button>
         <button className="btn-action primary receivables-sync-btn" onClick={handleSync} disabled={syncing || loading}>
           <RefreshCw size={16} className={syncing ? 'animate-spin' : ''} />
           {syncing ? '同步中' : '同步飞书数据'}

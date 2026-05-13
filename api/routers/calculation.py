@@ -2,7 +2,7 @@ import csv
 from datetime import datetime, timedelta, timezone
 import io
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
 from api.auth import (
@@ -21,16 +21,25 @@ service = CalculationService()
 @router.post("/calculate")
 async def calculate_fees(
     file: UploadFile = File(...),
+    fx_rate_date: str | None = Form(default=None),
     current_user: dict = Depends(require_permission(PERMISSION_BILLING_RUN)),
 ):
     try:
         owner_username = str(current_user.get("username") or "")
         file_path = await service.save_uploaded_file(file, owner_username=owner_username)
+        choice_result = service.prepare_fx_rate_choice(
+            file_path,
+            file.filename or "",
+            selected_rate_date=fx_rate_date,
+        )
+        if choice_result.get("requires_fx_choice"):
+            return choice_result
         return service.process_local_file(
             file_path,
             file.filename or "",
             owner_username=owner_username,
             operation="calculate",
+            selected_fx_rate_date=fx_rate_date,
         )
     except HTTPException:
         raise
@@ -39,9 +48,27 @@ async def calculate_fees(
 
 
 @router.post("/recalculate")
-def recalculate_fees(current_user: dict = Depends(require_permission(PERMISSION_BILLING_RUN))):
+def recalculate_fees(
+    fx_rate_date: str | None = Query(default=None),
+    current_user: dict = Depends(require_permission(PERMISSION_BILLING_RUN)),
+):
     try:
-        return service.recalculate_latest(owner_username=str(current_user.get("username") or ""))
+        owner_username = str(current_user.get("username") or "")
+        file_path, original_filename = service.get_latest_consumption_file(owner_username=owner_username)
+        choice_result = service.prepare_fx_rate_choice(
+            file_path,
+            original_filename,
+            selected_rate_date=fx_rate_date,
+        )
+        if choice_result.get("requires_fx_choice"):
+            return choice_result
+        return service.process_local_file(
+            file_path,
+            original_filename,
+            owner_username=owner_username,
+            operation="recalculate",
+            selected_fx_rate_date=fx_rate_date,
+        )
     except HTTPException:
         raise
     except Exception as exc:

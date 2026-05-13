@@ -101,6 +101,42 @@ interface LatestResultInfo {
   download_url?: string
 }
 
+interface FxChoiceCandidate {
+  rate_date: string
+  pub_time?: string
+  source?: string
+  cny_tt_buy?: number | string | null
+  eur_tt_buy?: number | string | null
+  usd_tt_sell?: number | string | null
+  jpy_tt_sell?: number | string | null
+  usd_tt_buy?: number | string | null
+  usable?: boolean
+  missing_fields?: string[]
+}
+
+interface FxChoicePayload {
+  month: string
+  required_currencies: string[]
+  reason: string
+  candidates: FxChoiceCandidate[]
+}
+
+interface CalculationApiResponse extends LatestResultInfo {
+  status?: string
+  requires_fx_choice?: boolean
+  fx_choice?: FxChoicePayload
+}
+
+interface FxChoiceDialogState {
+  mode: 'calculate' | 'recalculate'
+  file?: File
+  payload: FxChoicePayload
+}
+
+const isFxChoiceResponse = (result: CalculationApiResponse): result is CalculationApiResponse & {
+  fx_choice: FxChoicePayload
+} => Boolean(result.requires_fx_choice && result.fx_choice)
+
 const extractMonthFromResultInfo = (info: LatestResultInfo): string | null => (
   normalizeMonthText(info.source_file)
   ?? normalizeMonthText(info.filename)
@@ -159,6 +195,8 @@ function App() {
   const [latestResultMetaMonth, setLatestResultMetaMonth] = useState<string | null>(null)
   const [resultsPage, setResultsPage] = useState(1)
   const [resultsPageSize, setResultsPageSize] = useState(100)
+  const [fxChoiceDialog, setFxChoiceDialog] = useState<FxChoiceDialogState | null>(null)
+  const [fxChoiceSelectedRateDate, setFxChoiceSelectedRateDate] = useState('')
   const [estimateResults, setEstimateResults] = useState<CalculationResult | null>(null)
   const [estimateResultFile, setEstimateResultFile] = useState('')
   const [estimateResultDataUrl, setEstimateResultDataUrl] = useState('')
@@ -361,6 +399,46 @@ function App() {
       return error.message
     }
     return fallback
+  }
+
+  const openFxChoiceDialog = (
+    payload: FxChoicePayload,
+    mode: FxChoiceDialogState['mode'],
+    file?: File,
+  ) => {
+    const firstUsable = payload.candidates.find((item) => item.usable !== false)
+    setFxChoiceDialog({ mode, file, payload })
+    setFxChoiceSelectedRateDate(firstUsable?.rate_date || '')
+    setToastMessage('当月存在多个可用汇率，请选择本次计算使用的汇率日期')
+    setToastType('info')
+  }
+
+  const applyBillingCalculationResponse = async (result: CalculationApiResponse, successMessage: string) => {
+    if (!result.data_url) {
+      setToastMessage('计算失败: 后端未返回结果地址')
+      setToastType('error')
+      return
+    }
+
+    const nextFile = String(result.output_file || result.filename || '')
+    const nextDataUrl = String(result.data_url || '')
+    const nextDownloadUrl = String(result.download_url || '')
+    setResultFile(nextFile)
+    setResultDataUrl(nextDataUrl)
+    setResultDownloadUrl(nextDownloadUrl)
+    setResultMetaLoaded(true)
+    setLatestResultMetaMonth(extractMonthFromResultInfo(result))
+    setResultsPage(1)
+
+    const { data: resultData } = await apiJson<CalculationResult>(nextDataUrl)
+    setResults(resultData)
+    startTransition(() => {
+      setActiveTab('results')
+    })
+
+    setIsDashboardStale(true)
+    setToastMessage(successMessage)
+    setToastType('success')
   }
 
   const taskHistory = useTaskHistory({
@@ -730,40 +808,18 @@ function App() {
       setToastMessage('正在上传并计算...')
       setToastType('info')
 
-      const { data: result } = await apiJson<{
-        output_file?: string
-        filename?: string
-        data_url?: string
-        download_url?: string
-      }>('/api/calculate', {
+      const { data: result } = await apiJson<CalculationApiResponse>('/api/calculate', {
         method: 'POST',
         body: formData,
       })
 
-      if (result.data_url) {
-        const nextFile = String(result.output_file || result.filename || '')
-        const nextDataUrl = String(result.data_url || '')
-        const nextDownloadUrl = String(result.download_url || '')
-        setResultFile(nextFile)
-        setResultDataUrl(nextDataUrl)
-        setResultDownloadUrl(nextDownloadUrl)
-        setResultMetaLoaded(true)
-        setLatestResultMetaMonth(extractMonthFromResultInfo(result))
-        setResultsPage(1)
-
-        const { data: resultData } = await apiJson<CalculationResult>(nextDataUrl)
-        setResults(resultData)
-        startTransition(() => {
-          setActiveTab('results')
-        })
-
-        setIsDashboardStale(true)
-        setToastMessage('计算完成')
-        setToastType('success')
-      } else {
-        setToastMessage('计算失败: 后端未返回结果地址')
-        setToastType('error')
+      if (isFxChoiceResponse(result)) {
+        openFxChoiceDialog(result.fx_choice, 'calculate', file)
+        return
       }
+
+      await applyBillingCalculationResponse(result, '计算完成')
+      return
     } catch (error: unknown) {
       if (isApiHttpError(error) && error.status === 401) {
         handleUnauthorized()
@@ -1083,44 +1139,70 @@ function App() {
       setToastMessage('正在基于最近上传文件重新计算...')
       setToastType('info')
 
-      const { data: result } = await apiJson<{
-        output_file?: string
-        filename?: string
-        data_url?: string
-        download_url?: string
-      }>('/api/recalculate', {
+      const { data: result } = await apiJson<CalculationApiResponse>('/api/recalculate', {
         method: 'POST',
       })
-      if (result.data_url) {
-        const nextFile = String(result.output_file || result.filename || '')
-        const nextDataUrl = String(result.data_url || '')
-        const nextDownloadUrl = String(result.download_url || '')
-        setResultFile(nextFile)
-        setResultDataUrl(nextDataUrl)
-        setResultDownloadUrl(nextDownloadUrl)
-        setResultMetaLoaded(true)
-        setLatestResultMetaMonth(extractMonthFromResultInfo(result))
-        setResultsPage(1)
-
-        const { data: resultData } = await apiJson<CalculationResult>(nextDataUrl)
-        setResults(resultData)
-        startTransition(() => {
-          setActiveTab('results')
-        })
-
-        setIsDashboardStale(true)
-        setToastMessage('已重新计算完成')
-        setToastType('success')
-      } else {
-        setToastMessage('重新计算失败: 后端未返回结果地址')
-        setToastType('error')
+      if (isFxChoiceResponse(result)) {
+        openFxChoiceDialog(result.fx_choice, 'recalculate')
+        return
       }
+
+      await applyBillingCalculationResponse(result, '已重新计算完成')
+      return
     } catch (error: unknown) {
       if (isApiHttpError(error) && error.status === 401) {
         handleUnauthorized()
         return
       }
       setToastMessage(`重新计算失败: ${getApiErrorMessage(error, '未知错误')}`)
+      setToastType('error')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleConfirmFxChoice = async () => {
+    if (!fxChoiceDialog || !fxChoiceSelectedRateDate) return
+
+    setLoading(true)
+    try {
+      setToastMessage('正在使用已选汇率计算...')
+      setToastType('info')
+
+      const selectedDate = fxChoiceSelectedRateDate
+      const { mode, file } = fxChoiceDialog
+      const request =
+        mode === 'calculate'
+          ? (() => {
+              if (!file) throw new Error('缺少待计算文件，请重新上传')
+              const formData = new FormData()
+              formData.append('file', file)
+              formData.append('fx_rate_date', selectedDate)
+              return apiJson<CalculationApiResponse>('/api/calculate', {
+                method: 'POST',
+                body: formData,
+              })
+            })()
+          : apiJson<CalculationApiResponse>(
+              `/api/recalculate?fx_rate_date=${encodeURIComponent(selectedDate)}`,
+              { method: 'POST' },
+            )
+
+      const { data: result } = await request
+      if (isFxChoiceResponse(result)) {
+        openFxChoiceDialog(result.fx_choice, mode, file)
+        return
+      }
+
+      setFxChoiceDialog(null)
+      setFxChoiceSelectedRateDate('')
+      await applyBillingCalculationResponse(result, mode === 'calculate' ? '计算完成' : '已重新计算完成')
+    } catch (error: unknown) {
+      if (isApiHttpError(error) && error.status === 401) {
+        handleUnauthorized()
+        return
+      }
+      setToastMessage(`计算失败: ${getApiErrorMessage(error, '未知错误')}`)
       setToastType('error')
     } finally {
       setLoading(false)
@@ -1457,6 +1539,89 @@ function App() {
         onRefreshTaskHistory={() => taskHistory.loadTaskHistory()}
         onExportTaskHistory={taskHistory.exportTaskHistory}
       />
+
+      {fxChoiceDialog && (
+        <div className="modal-overlay fx-choice-overlay" role="dialog" aria-modal="true">
+          <div className="modal-card fx-choice-modal">
+            <div className="modal-header">
+              <div className="modal-title">
+                <div>
+                  <h2>选择计算汇率</h2>
+                  <p className="fx-choice-subtitle">
+                    {fxChoiceDialog.payload.month} · {fxChoiceDialog.payload.required_currencies.join(' / ')}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="modal-close-btn"
+                onClick={() => {
+                  setFxChoiceDialog(null)
+                  setFxChoiceSelectedRateDate('')
+                }}
+              >
+                ×
+              </button>
+            </div>
+            <div className="modal-body fx-choice-body">
+              <div className="fx-choice-list">
+                {fxChoiceDialog.payload.candidates.map((candidate) => {
+                  const isSelected = candidate.rate_date === fxChoiceSelectedRateDate
+                  const isUsable = candidate.usable !== false
+                  return (
+                    <button
+                      key={candidate.rate_date}
+                      type="button"
+                      className={`fx-choice-option${isSelected ? ' selected' : ''}${!isUsable ? ' disabled' : ''}`}
+                      disabled={!isUsable}
+                      onClick={() => setFxChoiceSelectedRateDate(candidate.rate_date)}
+                    >
+                      <div className="fx-choice-option-main">
+                        <span className="fx-choice-date">{candidate.rate_date}</span>
+                        <span className={`fx-choice-status ${isUsable ? 'ok' : 'warn'}`}>
+                          {isUsable ? '可用' : '缺少字段'}
+                        </span>
+                      </div>
+                      <div className="fx-choice-rate-grid">
+                        <span>CNY {candidate.cny_tt_buy ?? '-'}</span>
+                        <span>EUR {candidate.eur_tt_buy ?? '-'}</span>
+                        <span>USD卖 {candidate.usd_tt_sell ?? '-'}</span>
+                        <span>JPY {candidate.jpy_tt_sell ?? '-'}</span>
+                        <span>USD买 {candidate.usd_tt_buy ?? '-'}</span>
+                      </div>
+                      <div className="fx-choice-meta-row">
+                        <span>{candidate.source || 'manual'}</span>
+                        <span>{candidate.pub_time || '-'}</span>
+                        {!isUsable && <span>{candidate.missing_fields?.join(', ') || '-'}</span>}
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
+              <div className="fx-choice-footer">
+                <button
+                  type="button"
+                  className="secondary-btn"
+                  onClick={() => {
+                    setFxChoiceDialog(null)
+                    setFxChoiceSelectedRateDate('')
+                  }}
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  className="primary-btn"
+                  disabled={!fxChoiceSelectedRateDate || loading}
+                  onClick={handleConfirmFxChoice}
+                >
+                  确认并计算
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       <UserManagerModal
         visible={showUserManager}

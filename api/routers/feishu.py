@@ -6,8 +6,10 @@ import logging
 import os
 from datetime import datetime
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from api.auth import PERMISSION_FEISHU_SYNC, get_current_user, require_permission
@@ -61,6 +63,62 @@ def get_receivable_client_summary(
     current_user: str = Depends(get_current_user),
 ):
     return ReceivableSyncService().get_client_summary(metric=metric, limit=limit, db=db)
+
+
+@router.get("/receivables/export")
+def export_receivable_bills(
+    status: str = Query("all", pattern="^(overdue|outstanding|all)$"),
+    flow_type: str = Query("all", pattern="^(all|bill_send|client_advance)$"),
+    limit: int = Query(50000, ge=1, le=50000),
+    client_name: str | None = Query(None),
+    db: Session = Depends(get_db),
+    current_user: str = Depends(get_current_user),
+):
+    try:
+        buffer, filename = ReceivableSyncService().build_bills_export(
+            status=status,
+            flow_type=None if flow_type == "all" else flow_type,
+            client_name=client_name,
+            limit=limit,
+            db=db,
+        )
+        record_operation_audit(
+            category="feishu",
+            action="export_receivables",
+            actor=str(current_user or "system"),
+            status="success",
+            output_file=filename,
+            metadata={
+                "receivable_status": status,
+                "flow_type": flow_type,
+                "client_name": client_name,
+                "limit": limit,
+            },
+        )
+        encoded_filename = quote(filename)
+        return StreamingResponse(
+            iter([buffer.getvalue()]),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                "Content-Disposition": f"attachment; filename=\"{filename}\"; filename*=UTF-8''{encoded_filename}",
+            },
+        )
+    except Exception as exc:
+        logger.exception("Failed to export Feishu receivables")
+        record_operation_audit(
+            category="feishu",
+            action="export_receivables",
+            actor=str(current_user or "system"),
+            status="failed",
+            error_message=str(exc),
+            metadata={
+                "receivable_status": status,
+                "flow_type": flow_type,
+                "client_name": client_name,
+                "limit": limit,
+            },
+        )
+        raise HTTPException(status_code=500, detail=f"应收回款明细导出失败: {exc}") from exc
 
 
 @router.post("/receivables/sync")

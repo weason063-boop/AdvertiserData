@@ -93,6 +93,11 @@ class CalculationService:
     _NET_CONSUMPTION_COLUMN_CANDIDATES = ("汇总纯花费", "汇总纯消耗", "账单汇总")
     _VISIBLE_CONSUMPTION_COLUMN_CANDIDATES = ("代投消耗", "流水消耗", "账单汇总", "代投/咨询拆分", "流水拆分")
     _CLIENT_ACCOUNT_SHEET_MARKERS = ("客户端口账户代投", "客户端口代投")
+    _FX_REQUIRED_FIELDS_BY_CURRENCY = {
+        "RMB": ("cny_tt_buy", "usd_tt_sell"),
+        "EUR": ("eur_tt_buy", "usd_tt_sell"),
+        "JPY": ("jpy_tt_sell", "usd_tt_buy"),
+    }
     _ESTIMATE_REQUIRED_COLUMN_ALIASES = {
         "母公司": ("母公司",),
         "媒介": ("媒介",),
@@ -103,6 +108,9 @@ class CalculationService:
         self._daily_fx_snapshot_service = daily_fx_snapshot_service or DailyFxSnapshotService()
         self._result_registry_lock = threading.Lock()
         self._detail_backfill_lock = threading.Lock()
+        self._fx_stats_lock = threading.Lock()
+        self._dashboard_backfill_schedule_lock = threading.Lock()
+        self._dashboard_backfill_worker: threading.Thread | None = None
         self._detail_backfill_signature: tuple[tuple[str, int, int, str], ...] | None = None
 
     def _audit(
@@ -682,16 +690,22 @@ class CalculationService:
                 continue
             if not owner or not self._is_allowed_result_filename(filename):
                 continue
-            normalized_records.append(
-                {
-                    "id": result_id,
-                    "owner": owner,
-                    "filename": filename,
-                    "source_file": str(item.get("source_file") or ""),
-                    "operation": str(item.get("operation") or "calculate"),
-                    "created_at": str(item.get("created_at") or datetime.utcnow().isoformat()),
-                }
-            )
+            normalized_record = {
+                "id": result_id,
+                "owner": owner,
+                "filename": filename,
+                "source_file": str(item.get("source_file") or ""),
+                "operation": str(item.get("operation") or "calculate"),
+                "created_at": str(item.get("created_at") or datetime.utcnow().isoformat()),
+            }
+            calculation_month = str(item.get("calculation_month") or "").strip()
+            if self._is_valid_month_string(calculation_month):
+                normalized_record["calculation_month"] = calculation_month
+            if isinstance(item.get("fx_snapshot"), dict):
+                normalized_record["fx_snapshot"] = item["fx_snapshot"]
+            if isinstance(item.get("fx_lock"), dict):
+                normalized_record["fx_lock"] = item["fx_lock"]
+            normalized_records.append(normalized_record)
         return {"records": normalized_records}
 
     def _save_result_registry_unlocked(self, state: dict[str, Any]) -> None:
@@ -732,6 +746,9 @@ class CalculationService:
         owner_username: str,
         source_file: str,
         operation: str,
+        calculation_month: str | None = None,
+        fx_snapshot: dict[str, Any] | None = None,
+        fx_lock: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         record = {
             "id": uuid.uuid4().hex,
@@ -741,6 +758,12 @@ class CalculationService:
             "operation": operation,
             "created_at": datetime.utcnow().isoformat(),
         }
+        if calculation_month and self._is_valid_month_string(calculation_month):
+            record["calculation_month"] = calculation_month
+        if fx_snapshot:
+            record["fx_snapshot"] = fx_snapshot
+        if fx_lock:
+            record["fx_lock"] = fx_lock
         with self._result_registry_lock:
             state = self._load_result_registry_unlocked()
             records = self._prune_result_records(state.get("records", []))
@@ -831,30 +854,31 @@ class CalculationService:
                 "path": file_path,
                 "source_file": str(record.get("source_file") or ""),
                 "created_at": str(record.get("created_at") or ""),
+                "legacy": False,
             }
 
-        if latest_record_by_filename:
-            return sorted(
-                latest_record_by_filename.values(),
-                key=lambda item: (str(item.get("created_at") or ""), str(item.get("filename") or "")),
-            )
-
-        legacy_entries: list[dict[str, Any]] = []
         for path in sorted(
             upload_dir.glob("*_results.xlsx"),
             key=lambda item: (item.stat().st_mtime_ns, item.name),
         ):
             if not self._is_legacy_dashboard_result_filename(path.name):
                 continue
-            legacy_entries.append(
+            filename = secure_filename(path.name)
+            latest_record_by_filename.setdefault(
+                filename,
                 {
-                    "filename": path.name,
+                    "filename": filename,
                     "path": path,
                     "source_file": "",
-                    "created_at": "",
-                }
+                    "created_at": f"{path.stat().st_mtime_ns:020d}",
+                    "legacy": True,
+                },
             )
-        return legacy_entries
+
+        return sorted(
+            latest_record_by_filename.values(),
+            key=lambda item: (str(item.get("created_at") or ""), str(item.get("filename") or "")),
+        )
 
     def list_result_files(self) -> list[Path]:
         upload_dir = self._get_upload_dir()
@@ -899,7 +923,7 @@ class CalculationService:
         latest = max(user_records, key=lambda item: str(item.get("created_at") or ""))
         result_id = str(latest["id"])
         filename = str(latest["filename"])
-        return {
+        payload = {
             "has_result": True,
             "result_id": result_id,
             "filename": filename,
@@ -910,6 +934,13 @@ class CalculationService:
             "source_file": latest.get("source_file", ""),
             "operation": latest.get("operation", ""),
         }
+        if latest.get("calculation_month"):
+            payload["calculation_month"] = latest.get("calculation_month")
+        if latest.get("fx_lock"):
+            payload["fx_lock"] = latest.get("fx_lock")
+        if latest.get("fx_snapshot"):
+            payload["fx_snapshot"] = latest.get("fx_snapshot")
+        return payload
     def _normalize_sheet_currency(self, sheet_name: str) -> str | None:
         name = str(sheet_name or "").strip().lower().replace(" ", "")
         if any(x in name for x in ("jpy", "日元", "日币")):
@@ -1034,12 +1065,407 @@ class CalculationService:
         if require_snapshot and not today_snapshot:
             raise HTTPException(
                 status_code=400,
+                detail="Missing today FX snapshot. Please save exchange rates before calculating.",
+            )
+        return {"hangseng_today": today_snapshot or {}}
+
+
+    def _snapshot_numeric_value(self, snapshot: dict[str, Any], field: str) -> float | None:
+        try:
+            value = float(snapshot.get(field))
+        except (TypeError, ValueError):
+            return None
+        return value if value > 0 else None
+
+    def _missing_fx_snapshot_fields(
+        self,
+        snapshot: dict[str, Any],
+        required_currencies: set[str],
+    ) -> list[str]:
+        missing: list[str] = []
+        for currency in sorted(required_currencies):
+            for field in self._FX_REQUIRED_FIELDS_BY_CURRENCY.get(currency, ()):
+                if self._snapshot_numeric_value(snapshot, field) is None:
+                    missing.append(f"{currency}:{field}")
+        return missing
+
+    def _build_fx_candidate_item(
+        self,
+        snapshot: dict[str, Any],
+        required_currencies: set[str],
+    ) -> dict[str, Any]:
+        rate_date = str(snapshot.get("rate_date") or snapshot.get("date") or "")
+        missing_fields = self._missing_fx_snapshot_fields(snapshot, required_currencies)
+        return {
+            "rate_date": rate_date,
+            "pub_time": str(snapshot.get("pub_time") or ""),
+            "source": str(snapshot.get("source") or ""),
+            "cny_tt_buy": snapshot.get("cny_tt_buy"),
+            "eur_tt_buy": snapshot.get("eur_tt_buy"),
+            "usd_tt_sell": snapshot.get("usd_tt_sell"),
+            "jpy_tt_sell": snapshot.get("jpy_tt_sell"),
+            "usd_tt_buy": snapshot.get("usd_tt_buy"),
+            "usable": not missing_fields,
+            "missing_fields": missing_fields,
+        }
+
+    def _list_month_fx_candidates(
+        self,
+        month: str,
+        required_currencies: set[str],
+    ) -> list[dict[str, Any]]:
+        return [
+            self._build_fx_candidate_item(snapshot, required_currencies)
+            for snapshot in self._daily_fx_snapshot_service.list_month_snapshots(month)
+        ]
+
+    def _build_fx_choice_payload(
+        self,
+        month: str,
+        required_currencies: set[str],
+        candidates: list[dict[str, Any]],
+        *,
+        reason: str,
+    ) -> dict[str, Any]:
+        return {
+            "month": month,
+            "required_currencies": sorted(required_currencies),
+            "reason": reason,
+            "candidates": candidates,
+        }
+
+    def _get_required_fx_currencies(self, file_path: str, *, month_hint: str | None = None) -> set[str]:
+        required_currencies = set()
+        if self._contains_rmb_consumption(file_path, month_hint=month_hint):
+            required_currencies.add("RMB")
+        if self._contains_eur_consumption(file_path, month_hint=month_hint):
+            required_currencies.add("EUR")
+        if self._contains_jpy_consumption(file_path, month_hint=month_hint):
+            required_currencies.add("JPY")
+        return required_currencies
+
+    def prepare_fx_rate_choice(
+        self,
+        file_path: str,
+        original_filename: str,
+        *,
+        selected_rate_date: str | None = None,
+    ) -> dict[str, Any]:
+        month_hint = self._parse_month_from_filename(original_filename)
+        required_currencies = self._get_required_fx_currencies(file_path, month_hint=month_hint)
+        if not required_currencies or selected_rate_date:
+            return {"status": "ok", "requires_fx_choice": False}
+
+        normalized_month = month_hint if month_hint and self._is_valid_month_string(month_hint) else None
+        if not normalized_month:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "检测到 RMB、EUR 或 JPY 消耗，但无法识别账期月份，无法选择并锁定历史汇率。"
+                    "请在文件名或月份归属中包含明确月份后重新计算。"
+                ),
+            )
+
+        locked_snapshot = self._daily_fx_snapshot_service.get_month_lock(normalized_month)
+        if locked_snapshot:
+            missing_fields = self._missing_fx_snapshot_fields(locked_snapshot, required_currencies)
+            if missing_fields:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"{normalized_month} 已存在历史汇率锁，但缺少本次计算需要的字段："
+                        f"{', '.join(missing_fields)}。请确认后覆盖该月锁定汇率再重新计算。"
+                    ),
+                )
+            return {"status": "ok", "requires_fx_choice": False}
+
+        candidates = self._list_month_fx_candidates(normalized_month, required_currencies)
+        usable_candidates = [item for item in candidates if item.get("usable")]
+        if len(usable_candidates) > 1:
+            return {
+                "status": "requires_fx_choice",
+                "requires_fx_choice": True,
+                "fx_choice": self._build_fx_choice_payload(
+                    normalized_month,
+                    required_currencies,
+                    candidates,
+                    reason="multiple_monthly_fx_snapshots",
+                ),
+            }
+        if not usable_candidates:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{normalized_month} 没有可用于本次计算的月度汇率快照。"
+                    "请先在汇率管理中补录该账期月份汇率。"
+                ),
+            )
+        return {"status": "ok", "requires_fx_choice": False}
+
+    def _fx_snapshots_match_for_currencies(
+        self,
+        left: dict[str, Any],
+        right: dict[str, Any],
+        required_currencies: set[str],
+    ) -> bool:
+        if str(left.get("rate_date") or "") != str(right.get("rate_date") or ""):
+            return False
+
+        fields = {
+            field
+            for currency in required_currencies
+            for field in self._FX_REQUIRED_FIELDS_BY_CURRENCY.get(currency, ())
+        }
+        for field in fields:
+            left_value = self._snapshot_numeric_value(left, field)
+            right_value = self._snapshot_numeric_value(right, field)
+            if left_value is None or right_value is None:
+                return False
+            if abs(left_value - right_value) > 1e-12:
+                return False
+        return True
+
+    def _build_locked_exchange_context(
+        self,
+        *,
+        require_snapshot: bool,
+        month_hint: str | None,
+        actor: str,
+        required_currencies: set[str] | None = None,
+        selected_rate_date: str | None = None,
+    ) -> dict[str, Any]:
+        required_currencies = set(required_currencies or set())
+        if not require_snapshot:
+            return {
+                "hangseng_today": {},
+                "fx_lock": {"status": "not_required", "month": month_hint or ""},
+            }
+
+        normalized_month = month_hint if month_hint and self._is_valid_month_string(month_hint) else None
+        if not normalized_month:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "检测到 RMB、EUR 或 JPY 消耗，但无法识别账期月份，无法锁定历史汇率。"
+                    "请在文件名或月份归属中包含明确月份后重新计算。"
+                ),
+            )
+
+        if normalized_month:
+            locked_snapshot = self._daily_fx_snapshot_service.get_month_lock(normalized_month)
+            if locked_snapshot:
+                missing_fields = self._missing_fx_snapshot_fields(locked_snapshot, required_currencies)
+                if missing_fields:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"{normalized_month} 已存在历史汇率锁，但缺少本次计算需要的字段："
+                            f"{', '.join(missing_fields)}。请确认后覆盖该月锁定汇率再重新计算。"
+                        ),
+                    )
+                return {
+                    "hangseng_today": locked_snapshot,
+                    "fx_lock": {
+                        "status": "reused",
+                        "month": normalized_month,
+                        "rate_date": str(locked_snapshot.get("rate_date") or ""),
+                        "locked_at": str(locked_snapshot.get("locked_at") or ""),
+                    },
+                }
+
+        selected_rate_date = str(selected_rate_date or "").strip()
+        if selected_rate_date:
+            try:
+                normalized_rate_date = datetime.strptime(selected_rate_date, "%Y-%m-%d").strftime("%Y-%m-%d")
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail=f"汇率日期格式无效: {selected_rate_date}") from exc
+
+            if not normalized_rate_date.startswith(f"{normalized_month}-"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"选择的汇率日期 {normalized_rate_date} 不属于计算月份 {normalized_month}",
+                )
+
+            selected_snapshot = self._daily_fx_snapshot_service.get_snapshot(normalized_rate_date)
+            if not selected_snapshot:
+                raise HTTPException(status_code=400, detail=f"未找到 {normalized_rate_date} 的汇率快照")
+
+            missing_fields = self._missing_fx_snapshot_fields(selected_snapshot, required_currencies)
+            if missing_fields:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"选择的汇率快照缺少必要字段: {', '.join(missing_fields)}",
+                )
+
+            return {
+                "hangseng_today": selected_snapshot,
+                "fx_lock": {
+                    "status": "pending_create",
+                    "month": normalized_month,
+                    "rate_date": normalized_rate_date,
+                    "required_currencies": sorted(required_currencies),
+                    "actor": actor,
+                    "selection": "user_selected",
+                },
+            }
+
+        candidates = self._list_month_fx_candidates(normalized_month, required_currencies)
+        usable_candidates = [item for item in candidates if item.get("usable")]
+        if len(usable_candidates) > 1:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "FX_RATE_CHOICE_REQUIRED",
+                    "message": "当月存在多个可用汇率快照，请选择本次计算使用的汇率日期",
+                    "fx_choice": self._build_fx_choice_payload(
+                        normalized_month,
+                        required_currencies,
+                        candidates,
+                        reason="multiple_monthly_fx_snapshots",
+                    ),
+                },
+            )
+
+        if not usable_candidates:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{normalized_month} 未找到可用于本次外币计算的汇率快照。"
+                    "请先在汇率管理中补录该月汇率，再重新计算。"
+                ),
+            )
+
+        chosen_rate_date = str(usable_candidates[0].get("rate_date") or "")
+        chosen_snapshot = self._daily_fx_snapshot_service.get_snapshot(chosen_rate_date)
+        if not chosen_snapshot:
+            raise HTTPException(status_code=400, detail=f"未找到 {chosen_rate_date} 的汇率快照")
+
+        return {
+            "hangseng_today": chosen_snapshot,
+            "fx_lock": {
+                "status": "pending_create",
+                "month": normalized_month,
+                "rate_date": chosen_rate_date,
+                "required_currencies": sorted(required_currencies),
+                "actor": actor,
+                "selection": "auto_single_monthly_snapshot",
+            },
+        }
+
+        today_snapshot = self._daily_fx_snapshot_service.get_today_snapshot()
+        if not today_snapshot:
+            raise HTTPException(
+                status_code=400,
                 detail=(
                     "检测到 RMB、EUR 或 JPY 消耗，但今日恒生汇率快照尚未生效。"
                     "请先前往“汇率监控”页面补录今日快照，再重新计算。"
                 ),
             )
-        return {"hangseng_today": today_snapshot or {}}
+
+        missing_fields = self._missing_fx_snapshot_fields(today_snapshot, required_currencies)
+        if missing_fields:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "今日恒生汇率快照缺少本次计算需要的字段："
+                    f"{', '.join(missing_fields)}。请补全今日汇率后重新计算。"
+                ),
+            )
+        return {
+            "hangseng_today": today_snapshot,
+            "fx_lock": {
+                "status": "pending_create",
+                "month": normalized_month,
+                "rate_date": str(today_snapshot.get("rate_date") or ""),
+                "required_currencies": sorted(required_currencies),
+                "actor": actor,
+            },
+        }
+
+    def _commit_pending_fx_lock(self, exchange_context: dict[str, Any] | None, *, actor: str) -> None:
+        if not isinstance(exchange_context, dict):
+            return
+        fx_lock = exchange_context.get("fx_lock")
+        snapshot = exchange_context.get("hangseng_today")
+        if not isinstance(fx_lock, dict) or fx_lock.get("status") != "pending_create":
+            return
+        if not isinstance(snapshot, dict) or not snapshot:
+            return
+
+        month = str(fx_lock.get("month") or "").strip()
+        if not self._is_valid_month_string(month):
+            raise HTTPException(status_code=400, detail="无法提交历史汇率锁：账期月份无效。")
+
+        required_currencies = {
+            str(item).strip().upper()
+            for item in fx_lock.get("required_currencies", [])
+            if str(item).strip()
+        }
+        existing = self._daily_fx_snapshot_service.get_month_lock(month)
+        if existing and not self._fx_snapshots_match_for_currencies(existing, snapshot, required_currencies):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"{month} 已被其他计算锁定为不同汇率。"
+                    "为避免历史结果不一致，请确认该月锁定汇率后重新计算。"
+                ),
+            )
+
+        locked_snapshot = self._daily_fx_snapshot_service.lock_month_snapshot(
+            month,
+            snapshot,
+            actor=actor,
+        )
+        if not self._fx_snapshots_match_for_currencies(locked_snapshot, snapshot, required_currencies):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"{month} 已存在不同的历史汇率锁，本次结果未登记。"
+                    "请确认该月锁定汇率后重新计算。"
+                ),
+            )
+
+        exchange_context["hangseng_today"] = locked_snapshot
+        next_fx_lock = {
+            "status": "created",
+            "month": month,
+            "rate_date": str(locked_snapshot.get("rate_date") or ""),
+            "locked_at": str(locked_snapshot.get("locked_at") or ""),
+            "required_currencies": sorted(required_currencies),
+        }
+        if fx_lock.get("selection"):
+            next_fx_lock["selection"] = str(fx_lock.get("selection"))
+        exchange_context["fx_lock"] = next_fx_lock
+
+    def _build_result_fx_metadata(self, exchange_context: dict[str, Any] | None) -> dict[str, Any]:
+        context = exchange_context or {}
+        snapshot = context.get("hangseng_today")
+        if not isinstance(snapshot, dict) or not snapshot:
+            return {}
+
+        allowed_snapshot_keys = (
+            "rate_date",
+            "cny_tt_buy",
+            "eur_tt_buy",
+            "usd_tt_sell",
+            "jpy_tt_sell",
+            "usd_tt_buy",
+            "source",
+            "pub_time",
+            "locked_month",
+            "locked_at",
+            "locked_by",
+        )
+        fx_snapshot = {
+            key: snapshot.get(key)
+            for key in allowed_snapshot_keys
+            if snapshot.get(key) not in (None, "")
+        }
+        metadata: dict[str, Any] = {"fx_snapshot": fx_snapshot}
+        fx_lock = context.get("fx_lock")
+        if isinstance(fx_lock, dict) and fx_lock:
+            metadata["fx_lock"] = fx_lock.copy()
+        return metadata
 
     def _record_latest_uploaded_file(
         self,
@@ -1208,7 +1634,7 @@ class CalculationService:
     def get_latest_estimate_consumption_file(self, owner_username: str = "system") -> tuple[str, str]:
         return self._get_latest_uploaded_file(owner_username=owner_username, estimate=True)
 
-    def recalculate_latest(self, owner_username: str = "system"):
+    def recalculate_latest(self, owner_username: str = "system", selected_fx_rate_date: str | None = None):
         """Re-run calculation with latest uploaded consumption file."""
         file_path, original_filename = self.get_latest_consumption_file(owner_username=owner_username)
         result = self.process_local_file(
@@ -1216,6 +1642,7 @@ class CalculationService:
             original_filename,
             owner_username=owner_username,
             operation="recalculate",
+            selected_fx_rate_date=selected_fx_rate_date,
         )
         result["source_file"] = Path(file_path).name
         return result
@@ -1348,20 +1775,27 @@ class CalculationService:
         exchange_context: dict[str, Any] | None = None,
         output_path: str | None = None,
         calculation_date_override: str | None = None,
-    ) -> str:
+        actor: str = "system",
+        selected_fx_rate_date: str | None = None,
+    ) -> dict[str, Any]:
         month_hint = calculation_date_override or self._parse_month_from_filename(original_filename)
         calculation_date = month_hint or None
 
         if exchange_context is None:
             if require_fx_snapshot:
-                has_rmb_rows = self._contains_rmb_consumption(file_path, month_hint=month_hint)
-                has_eur_rows = self._contains_eur_consumption(file_path, month_hint=month_hint)
-                has_jpy_rows = self._contains_jpy_consumption(file_path, month_hint=month_hint)
-                exchange_context = self._build_daily_exchange_context(
-                    require_snapshot=has_rmb_rows or has_eur_rows or has_jpy_rows
+                required_currencies = self._get_required_fx_currencies(file_path, month_hint=month_hint)
+                exchange_context = self._build_locked_exchange_context(
+                    require_snapshot=bool(required_currencies),
+                    month_hint=month_hint,
+                    actor=actor,
+                    required_currencies=required_currencies,
+                    selected_rate_date=selected_fx_rate_date,
                 )
             else:
-                exchange_context = {"hangseng_today": {}}
+                exchange_context = {
+                    "hangseng_today": {},
+                    "fx_lock": {"status": "not_required", "month": month_hint or ""},
+                }
 
         output_file = calculate_service_fees(
             file_path,
@@ -1373,8 +1807,16 @@ class CalculationService:
         )
 
         if persist_stats:
-            self._update_stats_from_result(original_filename, output_file)
-        return output_file
+            with self._fx_stats_lock:
+                self._commit_pending_fx_lock(exchange_context, actor=actor)
+                self._update_stats_from_result(original_filename, output_file)
+        else:
+            self._commit_pending_fx_lock(exchange_context, actor=actor)
+        return {
+            "output_file": output_file,
+            "exchange_context": exchange_context,
+            "calculation_month": month_hint,
+        }
 
     def process_local_file(
         self,
@@ -1387,17 +1829,22 @@ class CalculationService:
         require_fx_snapshot: bool = True,
         exchange_context: dict[str, Any] | None = None,
         output_path: str | None = None,
+        selected_fx_rate_date: str | None = None,
     ):
         """Run the core billing calculation and update statistics."""
         try:
-            output_file = self._run_calculation_core(
+            core_result = self._run_calculation_core(
                 file_path,
                 original_filename,
                 persist_stats=persist_stats,
                 require_fx_snapshot=require_fx_snapshot,
                 exchange_context=exchange_context,
                 output_path=output_path,
+                actor=owner_username,
+                selected_fx_rate_date=selected_fx_rate_date,
             )
+            output_file = str(core_result["output_file"])
+            fx_metadata = self._build_result_fx_metadata(core_result.get("exchange_context"))
 
             output_name = Path(output_file).name
             result_record = self._register_result(
@@ -1405,6 +1852,9 @@ class CalculationService:
                 owner_username=owner_username,
                 source_file=original_filename,
                 operation=operation,
+                calculation_month=core_result.get("calculation_month"),
+                fx_snapshot=fx_metadata.get("fx_snapshot"),
+                fx_lock=fx_metadata.get("fx_lock"),
             )
             result_id = str(result_record["id"])
             self._audit(
@@ -1414,14 +1864,18 @@ class CalculationService:
                 input_file=original_filename,
                 output_file=output_name,
                 result_ref=result_id,
+                metadata=fx_metadata or None,
             )
-            return {
+            response = {
                 "status": "ok",
                 "result_id": result_id,
                 "output_file": output_name,
                 "download_url": f"/api/download/{result_id}",
                 "data_url": f"/api/results/{result_id}",
             }
+            if fx_metadata.get("fx_lock"):
+                response["fx_lock"] = fx_metadata["fx_lock"]
+            return response
         except HTTPException as exc:
             self._audit(
                 action=operation,
@@ -1477,7 +1931,7 @@ class CalculationService:
             temp_output = upload_dir / f"estimate_calc_output_{temp_id}.xlsx"
 
             calc_input_df.to_excel(temp_input, index=False, sheet_name="USD")
-            output_file = self._run_calculation_core(
+            core_result = self._run_calculation_core(
                 str(temp_input),
                 original_filename,
                 persist_stats=False,
@@ -1485,7 +1939,9 @@ class CalculationService:
                 exchange_context={"hangseng_today": {}},
                 output_path=str(temp_output),
                 calculation_date_override=estimate_calculation_date,
+                actor=owner_username,
             )
+            output_file = str(core_result["output_file"])
 
             result_df = pd.read_excel(output_file)
             sheet2_df = self._build_estimate_sheet2_output(
@@ -2223,6 +2679,23 @@ class CalculationService:
         except OSError as exc:
             logger.warning("Dashboard backfill signature cache write skipped: %s", exc)
 
+    def _dashboard_backfill_signature_is_current(
+        self,
+        signature: tuple[tuple[str, int, int, str], ...],
+        db: Session | None,
+    ) -> bool:
+        if signature == self._detail_backfill_signature:
+            return True
+
+        if not self._dashboard_snapshot_tables_have_data(db):
+            return False
+
+        cached_signature = self._read_dashboard_backfill_signature()
+        if signature == cached_signature:
+            self._detail_backfill_signature = signature
+            return True
+        return False
+
     def _dashboard_snapshot_tables_have_data(self, db: Session | None) -> bool:
         should_close = False
         snapshot_db = db
@@ -2238,6 +2711,47 @@ class CalculationService:
         finally:
             if should_close:
                 snapshot_db.close()
+
+    def _run_dashboard_backfill_worker(self) -> None:
+        try:
+            self.backfill_detail_stats_from_results(db=None)
+        except Exception:
+            logger.exception("Dashboard detail backfill worker failed")
+
+    def request_dashboard_backfill_from_results(self, db: Session | None = None) -> bool:
+        """
+        Request a dashboard snapshot refresh without blocking the caller.
+
+        Returns True only when a new background worker is started.
+        """
+        if os.getenv("TESTING") == "True":
+            return False
+
+        result_entries = self._get_dashboard_result_entries()
+        signature = self._get_results_file_signature(result_entries)
+        if not signature:
+            return False
+        if self._dashboard_backfill_signature_is_current(signature, db):
+            return False
+
+        with self._dashboard_backfill_schedule_lock:
+            if self._dashboard_backfill_signature_is_current(signature, db):
+                return False
+            if self._dashboard_backfill_worker and self._dashboard_backfill_worker.is_alive():
+                return False
+
+            worker = threading.Thread(
+                target=self._run_dashboard_backfill_worker,
+                name="dashboard-detail-backfill",
+                daemon=True,
+            )
+            self._dashboard_backfill_worker = worker
+            worker.start()
+            logger.info(
+                "Dashboard detail backfill scheduled in background for %s files",
+                len(result_entries),
+            )
+            return True
 
     def _reset_dashboard_snapshot_tables(self, db: Session) -> None:
         db.query(ClientMonthlyDetailStats).delete(synchronize_session=False)
@@ -2257,29 +2771,22 @@ class CalculationService:
         if signature == self._detail_backfill_signature:
             return
 
-        has_existing_snapshot = self._dashboard_snapshot_tables_have_data(db)
-        if has_existing_snapshot:
-            cached_signature = self._read_dashboard_backfill_signature()
-            if signature == cached_signature:
-                self._detail_backfill_signature = signature
-                return
+        if self._dashboard_backfill_signature_is_current(signature, db):
+            return
 
         with self._detail_backfill_lock:
             if signature == self._detail_backfill_signature:
                 return
-            has_existing_snapshot = self._dashboard_snapshot_tables_have_data(db)
-            if has_existing_snapshot:
-                cached_signature = self._read_dashboard_backfill_signature()
-                if signature == cached_signature:
-                    self._detail_backfill_signature = signature
-                    return
+            if self._dashboard_backfill_signature_is_current(signature, db):
+                return
 
             prepared_batches: list[tuple[str, pd.DataFrame]] = []
-            failures: list[tuple[str, Exception]] = []
+            failures: list[tuple[str, Exception, bool]] = []
             for entry in result_entries:
                 result_path = Path(entry["path"])
                 filename = str(entry.get("filename") or result_path.name)
                 source_file = str(entry.get("source_file") or "").strip()
+                is_legacy_entry = bool(entry.get("legacy"))
                 month_hint = (
                     self._parse_month_from_filename(source_file)
                     if source_file
@@ -2293,46 +2800,26 @@ class CalculationService:
                     )
                     prepared_batches.extend(months_to_process)
                 except Exception as exc:
-                    failures.append((filename, exc))
+                    failures.append((filename, exc, is_legacy_entry))
 
             if failures:
-                if has_existing_snapshot:
-                    for month_key, current_df in prepared_batches:
-                        self._upsert_monthly_stats(month_key, current_df, db=db)
-                    self._detail_backfill_signature = signature
-                    self._write_dashboard_backfill_signature(signature)
-                for filename, exc in failures:
-                    logger.warning("鍘嗗彶璐﹀崟鏄庣粏鍥炲～澶辫触: %s (%s)", filename, exc)
-                logger.warning("鍘嗗彶璐﹀崟鏄庣粏鍥炲～宸蹭繚鐣欐棫蹇収锛屾湰娆℃湭瑕嗙洊鏁版嵁")
+                for month_key, current_df in prepared_batches:
+                    self._upsert_monthly_stats(month_key, current_df, db=db)
+                has_registered_failure = any(not is_legacy for _, _, is_legacy in failures)
+                for filename, exc, _is_legacy in failures:
+                    logger.warning("历史账单明细回填失败: %s (%s)", filename, exc)
+                if has_registered_failure:
+                    logger.warning("历史账单明细回填存在登记结果失败，已保留现有看板历史记录，失败文件将在下次加载时重试")
+                    return
+                self._detail_backfill_signature = signature
+                self._write_dashboard_backfill_signature(signature)
                 return
 
-            if not prepared_batches:
-                if has_existing_snapshot:
-                    self._detail_backfill_signature = signature
-                    self._write_dashboard_backfill_signature(signature)
-                return
-
-            self._reset_dashboard_snapshot_tables(db)
             for month_key, current_df in prepared_batches:
                 self._upsert_monthly_stats(month_key, current_df, db=db)
             self._detail_backfill_signature = signature
             self._write_dashboard_backfill_signature(signature)
             return
-
-            self._reset_dashboard_snapshot_tables(db)
-
-            for filename, _, _ in signature:
-                result_path = self._get_upload_dir() / filename
-                if not result_path.exists():
-                    continue
-                try:
-                    months_to_process = self._prepare_result_month_batches(filename, result_path)
-                    for month_key, current_df in months_to_process:
-                        self._upsert_monthly_stats(month_key, current_df, db=db)
-                except Exception as exc:
-                    logger.warning("历史账单明细回填失败: %s (%s)", filename, exc)
-
-            self._detail_backfill_signature = signature
 
     def get_results_data(self, result_ref: str, owner_username: str):
         record = self._resolve_result_record_for_user(result_ref, owner_username)
