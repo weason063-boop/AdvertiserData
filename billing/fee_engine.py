@@ -385,17 +385,53 @@ def _infer_client_account_currency(row: pd.Series) -> str:
     return "USD"
 
 
-def _parse_month_text(text: str) -> Optional[str]:
+def _parse_month_text(text: str, prefer_latest_match: bool = False) -> Optional[str]:
     if not text:
         return None
-    match = re.search(r"(20\d{2})\D{0,2}(\d{1,2})", str(text))
-    if not match:
-        return None
-    year = int(match.group(1))
-    month = int(match.group(2))
-    if 2000 <= year <= 2099 and 1 <= month <= 12:
-        return f"{year}-{month:02d}"
-    return None
+    
+    patterns = [
+        r"(\d{2,4})年\s*(\d{1,2})月",      # 24年3月 / 2024年3月
+        r"(\d{4})[._\-\s](\d{1,2})",    # 2024.01 / 2024-1
+        r"(20\d{2})-(0[1-9]|1[0-2])",   # 标准格式
+        r"(20\d{2})(0[1-9]|1[0-2])",    # 202401
+    ]
+
+    selected_match: str | None = None
+    selected_start = -1
+    selected_end = -1
+    
+    for pattern in patterns:
+        for match in re.finditer(pattern, str(text)):
+            try:
+                year = int(match.group(1))
+                month = int(match.group(2))
+            except (ValueError, IndexError):
+                continue
+            
+            if year < 100:
+                year += 2000
+                
+            if 2000 <= year <= 2099 and 1 <= month <= 12:
+                match_value = f"{year}-{month:02d}"
+                match_start = match.start()
+                match_end = match.end()
+                
+                if selected_match is None:
+                    selected_match = match_value
+                    selected_start = match_start
+                    selected_end = match_end
+                    continue
+                
+                if prefer_latest_match:
+                    if (match_end, match_start) >= (selected_end, selected_start):
+                        selected_match = match_value
+                        selected_start = match_start
+                        selected_end = match_end
+                elif (match_start, match_end) <= (selected_start, selected_end):
+                    selected_match = match_value
+                    selected_start = match_start
+                    selected_end = match_end
+    return selected_match
 
 
 def _normalize_month_value(raw_value) -> Optional[str]:
@@ -470,7 +506,12 @@ def _extract_client_account_month(column_name: object) -> Optional[str]:
 
 def _is_client_account_sheet_name(sheet_name: str) -> bool:
     text = str(sheet_name or "")
-    return any(marker in text for marker in _CLIENT_ACCOUNT_SHEET_MARKERS)
+    if any(marker in text for marker in _CLIENT_ACCOUNT_SHEET_MARKERS):
+        return True
+    # Also support sheets like "2024年3月消耗" or "2024-03 消耗"
+    if "消耗" in text and _parse_month_text(text):
+        return True
+    return False
 
 
 def _is_client_account_managed_sheet(sheet_name: str, df_sheet: pd.DataFrame) -> bool:
@@ -675,7 +716,7 @@ def _load_consumption_data(
     frames = []
     included_sheet_names: list[str] = []
     client_account_sheets: dict[str, dict] = {}
-    target_month = _parse_month_text(calculation_date or "")
+    target_month = _parse_month_text(calculation_date or "", prefer_latest_match=True)
 
     for sheet in workbook.sheet_names:
         df_sheet = pd.read_excel(workbook, sheet_name=sheet)
@@ -686,17 +727,19 @@ def _load_consumption_data(
             continue
 
         if _is_client_account_managed_sheet(sheet, df_sheet):
-            month_column = _find_client_account_month_column(df_sheet, target_month)
-            if not target_month or not month_column:
+            # If target_month is missing from filename/calculation_date, try to extract it from the sheet name
+            sheet_target_month = target_month or _parse_month_text(sheet, prefer_latest_match=True)
+            month_column = _find_client_account_month_column(df_sheet, sheet_target_month)
+            if not sheet_target_month or not month_column:
                 raise ValueError(
-                    f"{sheet} Sheet 未找到与计算月份匹配的消耗列，当前计算月份: {calculation_date or '未知'}"
+                    f"{sheet} Sheet 未找到与计算月份匹配的消耗列，当前计算月份: {sheet_target_month or '未知'}"
                 )
 
             frames.append(
                 _build_client_account_managed_rows(
                     df_sheet,
                     sheet,
-                    target_month=target_month,
+                    target_month=sheet_target_month,
                     month_column=month_column,
                 )
             )
@@ -711,8 +754,18 @@ def _load_consumption_data(
             logger.info("Skipping non-consumption sheet: %s", sheet)
             continue
 
+        # Fallback month for this specific sheet
+        current_sheet_month = target_month or _parse_month_text(sheet, prefer_latest_match=True)
+
         currency_tag = _normalize_sheet_currency(sheet)
         df_local = df_sheet.copy()
+
+        # Ensure the sheet has a month attribution if missing
+        if "月份归属" not in df_local.columns or df_local["月份归属"].isna().all():
+            if current_sheet_month:
+                df_local["月份归属"] = current_sheet_month
+            else:
+                raise ValueError(f"Sheet '{sheet}' 缺少月份信息，请在文件名或 Sheet 名称中包含 YYYY-MM")
 
         if currency_tag in {"USD", "JPY", "RMB", "EUR"}:
             df_local["币种"] = currency_tag
@@ -1063,7 +1116,25 @@ def calculate_service_fees(
             # media even when the clause also contains aggregate waiver text
             # like "合计消耗*7%大于等于3000".
             is_per_media = contains_ge_han or (media_in_clause and not contains_heji)
-            dedup_key = (customer_str, media) if is_per_media else customer_str
+            group_key = media
+            if is_per_media and not contains_ge_han:
+                try:
+                    from billing.clause_parser import _extract_media_segment, _keyword_regex, MEDIA_KEYWORDS as _MK
+                    for clause_line in re.split(r'[;,\n；。，]', str(clause)):
+                        if any(a.lower() in clause_line.lower() for a in media_aliases):
+                            seg = _extract_media_segment(clause_line, media_aliases)
+                            if seg:
+                                grouped = []
+                                for mk, aliases in _MK.items():
+                                    if any(_keyword_regex(a).search(seg) for a in aliases):
+                                        grouped.append(mk)
+                                if grouped:
+                                    group_key = "+".join(sorted(set(grouped)))
+                                break
+                except Exception as exc:
+                    logger.debug("Failed to extract grouped media for %s: %s", media, exc)
+
+            dedup_key = (customer_str, group_key) if is_per_media else customer_str
 
             if dedup_key not in customer_fixed_fee_filled:
                 fixed_fees[row_idx] = _round2(fixed)

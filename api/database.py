@@ -421,20 +421,23 @@ def replace_client_stats_batch(month: str, stats: List[Dict], db: Session = None
         db = SessionLocal()
         should_close = True
     try:
-        db.query(ClientMonthlyStats).filter(
-            ClientMonthlyStats.month == month
-        ).delete(synchronize_session=False)
-
+        from api.models import ClientMonthlyStats
+        db.query(ClientMonthlyStats).filter(ClientMonthlyStats.month == month).delete()
         for s in stats:
             client_name = str(s.get("name") or "").strip()
             if not client_name:
                 continue
+            
+            
+            consumption = float(s.get("consumption") or 0.0)
+            fee = float(s.get("fee") or 0.0)
+            
             db.add(
                 ClientMonthlyStats(
                     month=month,
                     client_name=client_name,
-                    consumption=float(s.get("consumption") or 0.0),
-                    service_fee=float(s.get("fee") or 0.0),
+                    consumption=consumption,
+                    service_fee=fee,
                 )
             )
         db.commit()
@@ -879,30 +882,28 @@ def replace_client_detail_stats_batch(month: str, stats: List[Dict], db: Session
         db = SessionLocal()
         should_close = True
     try:
-        db.query(ClientMonthlyDetailStats).filter(
-            ClientMonthlyDetailStats.month == month
-        ).delete(synchronize_session=False)
-
+        from api.models import ClientMonthlyDetailStats
+        db.query(ClientMonthlyDetailStats).filter(ClientMonthlyDetailStats.month == month).delete()
         for s in stats:
             client_name = str(s.get("name") or "").strip()
             if not client_name:
                 continue
-            db.add(
-                ClientMonthlyDetailStats(
-                    month=month,
-                    client_name=client_name,
-                    bill_type=str(s.get("bill_type") or "—").strip() or "—",
-                    service_type=str(s.get("service_type") or "—").strip() or "—",
-                    flow_consumption=float(s.get("flow_consumption") or 0.0),
-                    managed_consumption=float(s.get("managed_consumption") or 0.0),
-                    net_consumption=float(s.get("net_consumption") or 0.0),
-                    service_fee=float(s.get("service_fee") or 0.0),
-                    fixed_service_fee=float(s.get("fixed_service_fee") or 0.0),
-                    coupon=float(s.get("coupon") or 0.0),
-                    dst=float(s.get("dst") or 0.0),
-                    total=float(s.get("total") or 0.0),
-                )
-            )
+            
+            payload = {
+                "bill_type": str(s.get("bill_type") or "—").strip() or "—",
+                "service_type": str(s.get("service_type") or "—").strip() or "—",
+                "flow_consumption": float(s.get("flow_consumption") or 0.0),
+                "managed_consumption": float(s.get("managed_consumption") or 0.0),
+                "net_consumption": float(s.get("net_consumption") or 0.0),
+                "service_fee": float(s.get("service_fee") or 0.0),
+                "fixed_service_fee": float(s.get("fixed_service_fee") or 0.0),
+                "coupon": float(s.get("coupon") or 0.0),
+                "dst": float(s.get("dst") or 0.0),
+                "total": float(s.get("total") or 0.0),
+            }
+            
+            db.add(ClientMonthlyDetailStats(month=month, client_name=client_name, **payload))
+                
         db.commit()
     finally:
         if should_close:

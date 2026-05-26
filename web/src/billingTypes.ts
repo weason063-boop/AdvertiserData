@@ -240,3 +240,41 @@ export interface OperationAuditLog {
   metadata?: Record<string, unknown> | null
   created_at: string
 }
+
+export interface BankReconciliationEntry {
+  source_id: string
+  date: string
+  debit: number | null
+  credit: number | null
+  amount: number
+  side: 'debit' | 'credit'
+  summary: string
+  ref_no: string
+  account: string
+  currency: string
+}
+
+export interface BankReconciliationRow {
+  status: 'matched' | 'bank_unmatched' | 'ledger_unmatched' | 'duplicate_pending'
+  status_label: string
+  direction_label: string
+  bank?: BankReconciliationEntry | null
+  ledger?: BankReconciliationEntry | null
+}
+
+export interface BankReconciliationBatch {
+  id: number
+  month: string
+  company: string
+  bank_filename: string
+  ledger_filename: string
+  status: string
+  rows: BankReconciliationRow[]
+  summary: any
+  created_at: string
+}
+
+export interface BankReconciliationBatchListResponse {
+  rows: BankReconciliationBatch[]
+  total: number
+}

@@ -15,21 +15,27 @@ class FeishuBitableClient:
         self._session.trust_env = False
 
     def _get(self, url: str, token: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        response = self._session.get(
-            url,
-            headers={"Authorization": f"Bearer {token}"},
-            params=params,
-            timeout=30,
-        )
+        try:
+            response = self._session.get(
+                url,
+                headers={"Authorization": f"Bearer {token}"},
+                params=params,
+                timeout=30,
+            )
+        except requests.exceptions.RequestException as exc:
+            raise RuntimeError(f"飞书 API 网络请求失败，请检查服务器网络或 DNS 设置: {exc}") from exc
         return self._parse_response(response)
 
     def _post(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:
-        response = self._session.post(
-            url,
-            headers={"Content-Type": "application/json; charset=utf-8"},
-            json=payload,
-            timeout=30,
-        )
+        try:
+            response = self._session.post(
+                url,
+                headers={"Content-Type": "application/json; charset=utf-8"},
+                json=payload,
+                timeout=30,
+            )
+        except requests.exceptions.RequestException as exc:
+            raise RuntimeError(f"飞书 API 网络请求失败，请检查服务器网络或 DNS 设置: {exc}") from exc
         return self._parse_response(response)
 
     @staticmethod
@@ -45,12 +51,15 @@ class FeishuBitableClient:
     def get_tenant_access_token(self) -> str:
         if not self.app_id or not self.app_secret:
             raise RuntimeError("FEISHU_APP_ID/FEISHU_APP_SECRET is not configured")
-        response = self._session.post(
-            "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
-            headers={"Content-Type": "application/json; charset=utf-8"},
-            json={"app_id": self.app_id, "app_secret": self.app_secret},
-            timeout=30,
-        )
+        try:
+            response = self._session.post(
+                "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+                headers={"Content-Type": "application/json; charset=utf-8"},
+                json={"app_id": self.app_id, "app_secret": self.app_secret},
+                timeout=30,
+            )
+        except requests.exceptions.RequestException as exc:
+            raise RuntimeError(f"飞书 API 网络请求失败（无法连接 open.feishu.cn），请检查服务器网络或 DNS 设置: {exc}") from exc
         try:
             payload = response.json()
         except Exception as exc:

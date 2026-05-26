@@ -19,6 +19,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from api.database import (
+    SessionLocal,
     record_operation_audit,
     replace_client_detail_stats_batch,
     replace_client_stats_batch,
@@ -62,8 +63,8 @@ class CalculationService:
         "母公司": ("母公司 ",),
         "预付/后付": ("预付 / 后付", "预付后付", "预付/后付 "),
         "服务类型": ("服务类型 ",),
-        "流水消耗": ("流水消耗 ",),
-        "代投消耗": ("代投消耗 ",),
+        "流水消耗": ("流水消耗 ", "换汇后流水消耗USD"),
+        "代投消耗": ("代投消耗 ", "换汇后代投消耗USD"),
         "汇总纯花费": ("汇总纯消耗", "汇总纯花费 ", "汇总纯消耗 ", "汇总纯花费(USD)", "汇总纯消耗(USD)"),
         "换汇汇率": ("换汇汇率 ",),
         "服务费": ("服务费 ",),
@@ -186,7 +187,12 @@ class CalculationService:
 
     def _is_client_account_sheet_name(self, sheet_name: str) -> bool:
         text = str(sheet_name or "")
-        return any(marker in text for marker in self._CLIENT_ACCOUNT_SHEET_MARKERS)
+        if any(marker in text for marker in self._CLIENT_ACCOUNT_SHEET_MARKERS):
+            return True
+        # Also support sheets like "2024年3月消耗" or "2024-03 消耗"
+        if "消耗" in text and self._parse_month_from_filename(text):
+            return True
+        return False
 
     def _is_client_account_managed_sheet(self, sheet_name: str, columns: list[str] | set[str]) -> bool:
         if not self._is_client_account_sheet_name(sheet_name):
@@ -210,12 +216,13 @@ class CalculationService:
 
     def _validate_consumption_workbook(self, file_path: str, original_filename: str) -> None:
         workbook = self._open_excel_workbook(file_path, context="消耗上传文件")
-        target_month = self._parse_month_from_filename(original_filename)
+        target_month = self._parse_month_from_filename(original_filename, prefer_latest_match=True)
         try:
             valid_sheets = []
             missing_service_type = []
             missing_currency = []
-            missing_target_month = []
+            missing_target_month_client_account = []
+            missing_target_month_regular = []
             has_month_column = False
             has_consumption_column = False
 
@@ -235,26 +242,37 @@ class CalculationService:
                     if "币种" not in cols:
                         missing_currency.append(sheet)
 
-                    month_column = self._find_client_account_month_column(columns, target_month)
-                    if not target_month or not month_column:
-                        missing_target_month.append(sheet)
+                    # If target_month is missing from filename, try to extract it from the sheet name
+                    sheet_target_month = target_month or self._parse_month_from_filename(sheet, prefer_latest_match=True)
+                    month_column = self._find_client_account_month_column(columns, sheet_target_month)
+                    if not sheet_target_month or not month_column:
+                        missing_target_month_client_account.append(sheet)
                     continue
 
-                if "服务类型" not in cols:
-                    missing_service_type.append(sheet)
-                    continue
+                # Detection for regular sheets
+                if not self._is_client_account_managed_sheet(sheet, columns):
+                    # Try to get month from filename OR sheet name
+                    current_sheet_month = target_month or self._parse_month_from_filename(sheet, prefer_latest_match=True)
+                    
+                    if "服务类型" not in cols:
+                        missing_service_type.append(sheet)
+                        continue
 
-                valid_sheets.append(sheet)
-                if "月份归属" in cols:
-                    has_month_column = True
-                if "代投消耗" in cols or "流水消耗" in cols:
-                    has_consumption_column = True
+                    if "月份归属" not in cols and not current_sheet_month:
+                        missing_target_month_regular.append(sheet)
+                        continue
 
-                sheet_currency = self._normalize_sheet_currency(sheet)
-                if sheet_currency == "OTHER" and "币种" not in cols:
-                    missing_currency.append(sheet)
-                if sheet_currency is None and "币种" not in cols:
-                    missing_currency.append(sheet)
+                    valid_sheets.append(sheet)
+                    if "月份归属" in cols:
+                        has_month_column = True
+                    if "代投消耗" in cols or "流水消耗" in cols:
+                        has_consumption_column = True
+
+                    sheet_currency = self._normalize_sheet_currency(sheet)
+                    if sheet_currency == "OTHER" and "币种" not in cols:
+                        missing_currency.append(sheet)
+                    if sheet_currency is None and "币种" not in cols:
+                        missing_currency.append(sheet)
 
             if missing_service_type:
                 hint = "、".join(missing_service_type[:3])
@@ -264,20 +282,18 @@ class CalculationService:
                 hint = "、".join(missing_currency[:3])
                 raise HTTPException(status_code=400, detail=f"模板缺少必需列“币种”，问题 Sheet: {hint}")
 
-            if missing_target_month:
-                hint = "、".join(missing_target_month[:3])
+            if missing_target_month_client_account:
+                hint = "、".join(missing_target_month_client_account[:3])
                 if not target_month:
                     raise HTTPException(
                         status_code=400,
-                        detail=(
-                            "文件名缺少月份，无法识别“客户端口账户代投”Sheet 的目标消耗列，"
-                            f"请使用 YYYY-MM 或 YYYY年M月 命名，问题 Sheet: {hint}"
-                        ),
+                        detail=f"文件名缺少月份，无法识别“客户端口账户代投”Sheet 的目标消耗列，请使用 YYYY-MM 或 YYYY年M月消耗 命名，问题 Sheet: {hint}",
                     )
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"“客户端口账户代投”Sheet 未找到与文件月份 {target_month} 匹配的消耗列，问题 Sheet: {hint}",
-                )
+                else:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"“客户端口账户代投”Sheet 未找到与文件月份 {target_month} 匹配的消耗列，问题 Sheet: {hint}",
+                    )
 
             if not valid_sheets:
                 raise HTTPException(
@@ -285,10 +301,8 @@ class CalculationService:
                     detail="未找到有效消耗数据 Sheet（至少包含 母公司/媒介/服务类型 列，或有效的“客户端口账户代投”Sheet）",
                 )
 
-            if not has_consumption_column:
-                raise HTTPException(status_code=400, detail="模板缺少“代投消耗”或“流水消耗”列")
-
-            if not has_month_column and not self._parse_month_from_filename(original_filename):
+            # Final check for missing months
+            if missing_target_month_regular:
                 raise HTTPException(
                     status_code=400,
                     detail="缺少月份信息：请在文件名中携带 YYYY-MM，或在表格中提供“月份归属”列",
@@ -1151,7 +1165,7 @@ class CalculationService:
         *,
         selected_rate_date: str | None = None,
     ) -> dict[str, Any]:
-        month_hint = self._parse_month_from_filename(original_filename)
+        month_hint = self._infer_primary_month_from_workbook(file_path, original_filename)
         required_currencies = self._get_required_fx_currencies(file_path, month_hint=month_hint)
         if not required_currencies or selected_rate_date:
             return {"status": "ok", "requires_fx_choice": False}
@@ -1778,8 +1792,18 @@ class CalculationService:
         actor: str = "system",
         selected_fx_rate_date: str | None = None,
     ) -> dict[str, Any]:
-        month_hint = calculation_date_override or self._parse_month_from_filename(original_filename)
+        month_hint = calculation_date_override or self._infer_primary_month_from_workbook(file_path, original_filename)
         calculation_date = month_hint or None
+
+        # Security Check: Reject future months
+        if month_hint:
+            now = datetime.now()
+            current_month_str = now.strftime("%Y-%m")
+            if month_hint > current_month_str:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"禁止处理未来月份账单: {month_hint} (当前系统时间: {current_month_str})"
+                )
 
         if exchange_context is None:
             if require_fx_snapshot:
@@ -1797,6 +1821,13 @@ class CalculationService:
                     "fx_lock": {"status": "not_required", "month": month_hint or ""},
                 }
 
+        if not output_path:
+            upload_dir = self._get_upload_dir()
+            short_uuid = str(uuid.uuid4().hex)[:8]
+            clean_original = secure_filename(original_filename)
+            month_prefix = month_hint or "unknown"
+            output_path = str(upload_dir / f"{month_prefix}_{clean_original}_{short_uuid}_results.xlsx")
+
         output_file = calculate_service_fees(
             file_path,
             contract_path=None,
@@ -1809,7 +1840,7 @@ class CalculationService:
         if persist_stats:
             with self._fx_stats_lock:
                 self._commit_pending_fx_lock(exchange_context, actor=actor)
-                self._update_stats_from_result(original_filename, output_file)
+                self._update_stats_from_result(original_filename, output_file, filename_month=month_hint)
         else:
             self._commit_pending_fx_lock(exchange_context, actor=actor)
         return {
@@ -2077,31 +2108,59 @@ class CalculationService:
         return None
 
     def _parse_month_from_filename(self, filename: str, *, prefer_latest_match: bool = False) -> str | None:
+        if not filename:
+            return None
+        
+        # Ensure we only look at the filename, not the full path
+        filename = Path(filename).name
+
+        # Strip system-generated prefix: {owner}_{timestamp}_{unique}_{original}
+        # timestamp is 20 digits, unique is 8 hex chars.
+        prefix_pattern = re.compile(r"^[^_]+_\d{20}_[a-f0-9]{8}_")
+        stripped_filename = prefix_pattern.sub("", filename)
+
         patterns = [
-            r"(\d{4})[._\-\s]?(\d{1,2})",  # 2024.01 / 2024-01 / 2024 01
-            r"(\d{4})年\s*(\d{1,2})月",      # 2024年1月
-            r"(20\d{2})(\d{2})",            # 202401
+            r"(\d{2,4})年\s*(\d{1,2})月",       # 2024年1月 / 24年1月
+            r"(\d{4})[._\-\s](0[1-9]|1[0-2])", # 2024.01 / 2024-12
+            r"(\d{4})[._\-\s]([1-9])(?!\d)",   # 2024.1 / 2024-5 (avoid matching 2024.10 as 2024.1)
+            r"(?<!\d)(20\d{2})(0[1-9]|1[0-2])(?!\d)", # 202401 (Compact, must be isolated)
         ]
 
         selected_match: str | None = None
         selected_start = -1
         selected_end = -1
-        for pattern in patterns:
-            for match in re.finditer(pattern, filename):
+
+        # Use stripped filename for higher accuracy
+        search_target = stripped_filename
+        
+        for pattern_str in patterns:
+            pattern = re.compile(pattern_str)
+            for match in pattern.finditer(search_target):
+                # Security: Ignore timestamps (14 or 20 digits)
+                match_str = match.group(0)
+                if re.search(r"\d{14}", match_str):
+                    continue
+
                 try:
                     year = int(match.group(1))
                     month = int(match.group(2))
-                except ValueError:
+                except (ValueError, IndexError):
                     continue
+                
+                if year < 100:
+                    year += 2000
+                    
                 if 2000 <= year <= 2099 and 1 <= month <= 12:
                     match_value = f"{year}-{month:02d}"
                     match_start = match.start()
                     match_end = match.end()
+                    
                     if selected_match is None:
                         selected_match = match_value
                         selected_start = match_start
                         selected_end = match_end
                         continue
+                        
                     if prefer_latest_match:
                         if (match_end, match_start) >= (selected_end, selected_start):
                             selected_match = match_value
@@ -2111,7 +2170,38 @@ class CalculationService:
                         selected_match = match_value
                         selected_start = match_start
                         selected_end = match_end
+        
         return selected_match
+
+    def _infer_primary_month_from_workbook(self, file_path: str, original_filename: str) -> str | None:
+        month_hint = self._parse_month_from_filename(original_filename, prefer_latest_match=True)
+        if month_hint:
+            return month_hint
+
+        try:
+            workbook = pd.ExcelFile(file_path)
+            try:
+                for sheet in workbook.sheet_names:
+                    sheet_month = self._parse_month_from_filename(sheet, prefer_latest_match=True)
+                    if sheet_month:
+                        return sheet_month
+                
+                for sheet in workbook.sheet_names:
+                    try:
+                        header_df = pd.read_excel(workbook, sheet_name=sheet, nrows=5)
+                        if "月份归属" in header_df.columns:
+                            for val in header_df["月份归属"].dropna():
+                                month_val = self._parse_month_from_filename(str(val))
+                                if month_val:
+                                    return month_val
+                    except Exception:
+                        continue
+            finally:
+                workbook.close()
+        except Exception:
+            pass
+            
+        return None
 
     def _to_numeric_series(self, df: pd.DataFrame, column_name: str | None) -> pd.Series:
         if not column_name or column_name not in df.columns:
@@ -2124,10 +2214,21 @@ class CalculationService:
     def _find_matching_columns(self, df: pd.DataFrame, candidates: tuple[str, ...]) -> list[str]:
         normalized_candidates = {self._normalize_header_key(candidate) for candidate in candidates}
         matches: list[str] = []
+        # Support stripping month prefix like "2026年4月" or "2026-04"
+        month_prefix_pattern = re.compile(r"^(?:20\d{2})\s*[年/\-_]?\s*(?:\d{1,2})\s*月?\s*")
+        
         for column in df.columns:
             column_name = str(column)
+            # Direct match
             if column_name in candidates or self._normalize_header_key(column_name) in normalized_candidates:
                 matches.append(column_name)
+                continue
+            
+            # Fuzzy match by stripping month prefix
+            stripped_col = month_prefix_pattern.sub("", column_name).strip()
+            if stripped_col in candidates or self._normalize_header_key(stripped_col) in normalized_candidates:
+                matches.append(column_name)
+                
         return matches
 
     def _standardize_result_headers(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -2336,6 +2437,13 @@ class CalculationService:
             columns = {str(col).strip() for col in df_sheet.columns.tolist()}
             if not {"母公司", "媒介"}.issubset(columns):
                 continue
+                
+            if "月份归属" not in columns:
+                sheet_month = self._parse_month_from_filename(sheet_name, prefer_latest_match=True)
+                if sheet_month:
+                    df_sheet = df_sheet.copy()
+                    df_sheet["月份归属"] = sheet_month
+                    
             frames.append(df_sheet.copy())
 
         if not frames:
@@ -2486,9 +2594,18 @@ class CalculationService:
                     invalid_count = int((normalized_df["月份归属"].notna() & normalized_df["_month"].isna()).sum())
                     if invalid_count:
                         logger.warning("月份归属列有 %s 行无法识别月份，已忽略", invalid_count)
+                    
+                    now = datetime.now()
+                    current_month_str = now.strftime("%Y-%m")
+                    
                     for month_key, group in valid_date_df.groupby("_month"):
-                        if self._is_valid_month_string(str(month_key)):
-                            months_to_process.append((str(month_key), group.copy()))
+                        m_key_str = str(month_key)
+                        if self._is_valid_month_string(m_key_str):
+                            # Security Filter: Ignore future months
+                            if m_key_str > current_month_str:
+                                logger.warning(f"忽略结果文件内部的未来月份数据行: {m_key_str}")
+                                continue
+                            months_to_process.append((m_key_str, group.copy()))
                 else:
                     has_month_col = False
             except Exception as exc:
@@ -2502,10 +2619,10 @@ class CalculationService:
 
         return months_to_process
 
-    def _update_stats_from_result(self, filename: str, output_path: str):
+    def _update_stats_from_result(self, filename: str, output_path: str, filename_month: str | None = None):
         """Parse result Excel and update monthly client and billing stats."""
         try:
-            months_to_process = self._prepare_result_month_batches(filename, output_path)
+            months_to_process = self._prepare_result_month_batches(filename, output_path, filename_month=filename_month)
             for month_key, current_df in months_to_process:
                 self._upsert_monthly_stats_with_retry(month_key, current_df)
 
@@ -2792,13 +2909,31 @@ class CalculationService:
                     if source_file
                     else self._parse_month_from_filename(filename, prefer_latest_match=True)
                 )
+                
+                # Security Filter: Ignore future months (relative to current system time)
+                # Since we are in 2026-05-15, we strictly allow only current or past months.
+                now = datetime.now()
+                current_month_str = now.strftime("%Y-%m")
+                if month_hint and month_hint > current_month_str:
+                    logger.warning(f"忽略结果文件中的未来月份提示: {month_hint} (文件: {filename})")
+                    continue
+
                 try:
                     months_to_process = self._prepare_result_month_batches(
                         source_file or filename,
                         result_path,
                         filename_month=month_hint,
                     )
-                    prepared_batches.extend(months_to_process)
+                    
+                    # Also filter within batches
+                    filtered_batches = []
+                    for m_key, m_df in months_to_process:
+                        if m_key > current_month_str:
+                            logger.warning(f"忽略结果文件内部的未来月份数据行: {m_key}")
+                            continue
+                        filtered_batches.append((m_key, m_df))
+                    
+                    prepared_batches.extend(filtered_batches)
                 except Exception as exc:
                     failures.append((filename, exc, is_legacy_entry))
 
