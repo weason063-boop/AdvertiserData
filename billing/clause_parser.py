@@ -42,6 +42,17 @@ MEDIA_KEYWORDS = {
     '直采资源': ['直采', '直采资源'],
     'DOOH数字户外广告': ['DOOH', 'DOOH数字户外广告'],
     'Uber': ['Uber'],
+    'Google DV360': ['Google DV360', 'GoogleDV360', 'DV360', 'DV 360'],
+    'DV360': ['Google DV360', 'GoogleDV360', 'DV360', 'DV 360'],
+    'DSP': ['DSP', 'Amazon DSP'],
+    'Teads': ['Teads'],
+    'Spotify Ads': ['Spotify Ads', 'Spotify'],
+    'Apple News': ['Apple News'],
+    'Outbrain': ['Outbrain'],
+    'MIQ': ['MIQ'],
+    'CTV': ['CTV'],
+    'Twitter（X）': ['Twitter', 'Twitter（X）', 'Twitter (X)'],
+    'line': ['line', 'LINE'],
 }
 
 ALL_MEDIA_KEYWORDS = set()
@@ -68,6 +79,45 @@ def _find_keyword_match(text: str, keyword: str, *, start: int = 0):
 
 def _contains_keyword(text: str, keyword: str) -> bool:
     return _find_keyword_match(text, keyword) is not None
+
+
+def get_media_keywords(media: str) -> list[str]:
+    """Return clause aliases for a spreadsheet media label."""
+    text = str(media or '').strip()
+    if text in MEDIA_KEYWORDS:
+        return MEDIA_KEYWORDS[text]
+
+    compact = text.casefold().replace(' ', '').replace('\u3000', '')
+    for canonical, aliases in MEDIA_KEYWORDS.items():
+        canonical_compact = canonical.casefold().replace(' ', '').replace('\u3000', '')
+        if compact == canonical_compact:
+            return aliases
+        if any(compact == str(alias).casefold().replace(' ', '').replace('\u3000', '') for alias in aliases):
+            return aliases
+
+    return [text] if text else []
+
+
+def _shared_trailing_percent(line: str) -> str | None:
+    """Return a trailing shared percentage, such as ``+10%``."""
+    percent_matches = list(re.finditer(r'(\d+(?:\.\d+)?)\s*%', line))
+    if not percent_matches:
+        return None
+
+    media_ends: list[int] = []
+    for aliases in MEDIA_KEYWORDS.values():
+        for alias in aliases:
+            media_match = _keyword_regex(alias).search(line)
+            if media_match:
+                media_ends.append(media_match.end())
+    if not media_ends:
+        return None
+
+    last_percent = percent_matches[-1]
+    if last_percent.start() <= max(media_ends):
+        return None
+
+    return f'+{last_percent.group(1)}%'
 
 
 def _extract_media_segment(line, target_keywords):
@@ -114,6 +164,10 @@ def _extract_media_segment(line, target_keywords):
 
     segment = line[target_pos:next_media_pos].strip()
     segment = segment.rstrip('+\uFF0B').strip()
+    if segment and '%' not in segment:
+        shared_percent = _shared_trailing_percent(line)
+        if shared_percent:
+            segment = f'{segment}{shared_percent}'
     return segment if segment else None
 
 
@@ -122,76 +176,125 @@ def _extract_media_segment(line, target_keywords):
 # =============================================================================
 
 def extract_applicable_clause(clause: str, target_date_str: str) -> str:
-    """
-    从包含多个时间段的条款中提取适用于目标日期的子条款
-
-    例如:
-      "GG 8%。2025年9月起 FB、TTD 5%。"
-      → 如果目标日期是2026年1月，返回 "FB、TTD 5%。"（9月起的条款）
-    """
-    year_month_match = re.search(r'(\d{4})[年\-](\d{1,2})', target_date_str)
-    if not year_month_match:
+    """Select the clause segment effective for the target billing month."""
+    if not clause or not target_date_str:
         return clause
 
-    target_year = int(year_month_match.group(1))
-    target_month = int(year_month_match.group(2))
-    target_date = datetime(target_year, target_month, 1)
+    target_match = re.search(r'(\d{4})\s*(?:\u5e74|-|/|\.)\s*(\d{1,2})', str(target_date_str))
+    if not target_match:
+        target_match = re.search(r'(\d{4})(\d{2})', str(target_date_str))
+    if not target_match:
+        return clause
 
-    time_pattern = r'((?:20)?\d{2,4}年)?(\d{1,2})月起'
-    parts = re.split(time_pattern, clause)
+    target_year = int(target_match.group(1))
+    target_month = int(target_match.group(2))
+    try:
+        target_date = datetime(target_year, target_month, 1)
+    except ValueError:
+        return clause
 
-    base_clause = ""
-    if parts and parts[0]:
-        base_clause = parts[0].strip()
+    effective_words = r'(?:\u8d77|\u5f00\u59cb|\u540e|\u4ee5\u540e|\u4e4b\u540e)'
+    marker_pattern = re.compile(
+        r'(?:(20\d{2}|\d{2})\s*\u5e74\s*)?(\d{1,2})\s*\u6708(?:\u4efd)?\s*'
+        + effective_words
+        + r'|(?:(20\d{2}|\d{2})\s*[-/.]\s*(\d{1,2})\s*'
+        + effective_words
+        + r')'
+    )
+    range_pattern = re.compile(
+        r'(?:(20\d{2}|\d{2})\s*\u5e74\s*)?(\d{1,2})\s*[-~\u81f3\u5230]\s*'
+        r'(\d{1,2})\s*\u6708(?:\u4efd)?'
+    )
+    markers = []
+    for marker in marker_pattern.finditer(clause):
+        markers.append({
+            'start': marker.start(),
+            'end': marker.end(),
+            'year': marker.group(1) or marker.group(3),
+            'month': marker.group(2) or marker.group(4),
+            'month_end': None,
+            'kind': 'point',
+        })
+    for marker in range_pattern.finditer(clause):
+        markers.append({
+            'start': marker.start(),
+            'end': marker.end(),
+            'year': marker.group(1),
+            'month': marker.group(2),
+            'month_end': marker.group(3),
+            'kind': 'range',
+        })
+    markers.sort(key=lambda marker: marker['start'])
+    if not markers:
+        return clause
 
+    base_clause = clause[:markers[0]['start']].strip(' \t\r\n\uff0c,\uff1b;\u3002:')
     segments = []
-    i = 1
-    while i < len(parts):
-        if i + 2 < len(parts):
-            year_str = parts[i]
-            month_str = parts[i + 1]
-            seg_clause = parts[i + 2]
+    for index, marker in enumerate(markers):
+        year_text = marker['year']
+        month_text = marker['month']
+        year = int(year_text) if year_text else target_year
+        if year < 100:
+            year += 2000
+        try:
+            segment_start_date = datetime(year, int(month_text), 1)
+            segment_end_date = datetime(year, int(marker['month_end'] or month_text), 1)
+        except ValueError:
+            continue
 
-            if year_str:
-                year_str = year_str.replace('年', '').strip()
-                if len(year_str) == 2:
-                    year = 2000 + int(year_str)
-                else:
-                    year = int(year_str)
-            else:
-                year = target_year
+        segment_start = marker['end']
+        segment_end = markers[index + 1]['start'] if index + 1 < len(markers) else len(clause)
+        segment_clause = clause[segment_start:segment_end].strip(' \t\r\n\uff0c,\uff1b;\u3002:')
+        segments.append({
+            'date': segment_start_date,
+            'end_date': segment_end_date,
+            'clause': segment_clause,
+            'kind': marker['kind'],
+        })
 
-            month = int(month_str)
-            seg_date = datetime(year, month, 1)
-
-            next_time_match = re.search(time_pattern, seg_clause)
-            if next_time_match:
-                seg_clause_clean = seg_clause[:next_time_match.start()].strip()
-            else:
-                seg_clause_clean = seg_clause.strip()
-
-            segments.append({
-                'date': seg_date,
-                'clause': seg_clause_clean,
-                'year': year,
-                'month': month
-            })
-            i += 3
-        else:
-            break
-
-    applicable_segments = [s for s in segments if s['date'] <= target_date]
-
+    applicable_segments = [
+        segment
+        for segment in segments
+        if (
+            segment['date'] <= target_date <= segment['end_date']
+            if segment['kind'] == 'range'
+            else segment['date'] <= target_date
+        )
+    ]
     if applicable_segments:
-        applicable_segments.sort(key=lambda x: x['date'], reverse=True)
+        applicable_segments.sort(key=lambda segment: segment['date'], reverse=True)
         return applicable_segments[0]['clause']
-    else:
-        return base_clause
+
+    return base_clause
 
 
 # =============================================================================
 # 阶梯费率解析
 # =============================================================================
+
+def _has_target_scoped_marker(
+    clause: str,
+    target_keywords: list[str],
+    scope_markers: tuple[str, ...],
+) -> bool:
+    """Check whether a scope marker applies to the requested media."""
+    lines = re.split(r'[;\n；。]', str(clause or ''))
+    for line in lines:
+        if not any(marker in line for marker in scope_markers):
+            continue
+        has_media = any(_contains_keyword(line, keyword) for keyword in ALL_MEDIA_KEYWORDS)
+        has_target = any(_contains_keyword(line, keyword) for keyword in target_keywords)
+        if not has_media or has_target:
+            return True
+    return False
+
+
+def _generic_clause_scope_allowed(clause: str, target_keywords: list[str]) -> bool:
+    """Allow generic rates only when no other media scope excludes the target."""
+    has_any_media = any(_contains_keyword(clause, keyword) for keyword in ALL_MEDIA_KEYWORDS)
+    has_target_media = any(_contains_keyword(clause, keyword) for keyword in target_keywords)
+    return not has_any_media or has_target_media
+
 
 def parse_tiered_from_text(text: str, consumption: float) -> Optional[Tuple[float, float]]:
     """
@@ -346,7 +449,7 @@ def parse_fee_clause(
         clause = extract_applicable_clause(clause, calculation_date)
 
     # 获取当前媒介关键词
-    keywords = MEDIA_KEYWORDS.get(media, [media])
+    keywords = get_media_keywords(media)
     type_kw = '流水' if service_type == '流水' else '代投'
     check_consumption = combined_consumption if combined_consumption is not None else consumption
 
@@ -354,11 +457,25 @@ def parse_fee_clause(
     if service_type == '流水' and media != 'Google':
         has_media_liushui = False
         for kw in keywords:
-            if f'{kw}流水' in clause:
+            escaped_kw = re.escape(str(kw))
+            if re.search(
+                rf'(?:{escaped_kw}[^\d%;\n]{{0,20}}流水|流水[^\d%;\n]{{0,20}}{escaped_kw})',
+                clause,
+                re.IGNORECASE,
+            ):
                 has_media_liushui = True
                 break
         if not has_media_liushui:
             return (0.0, 0.0)
+
+    if service_type != '流水' and _has_target_scoped_marker(
+        clause,
+        keywords,
+        ('合计', '单渠道', '单个渠道', '全媒介', '客户端客户'),
+    ):
+        tier_result = parse_tiered_from_text(clause, check_consumption)
+        if tier_result:
+            return tier_result
 
     # 按行拆分
     lines = re.split(r'[;,\n；。，]', clause)
@@ -370,15 +487,28 @@ def parse_fee_clause(
     for line in lines:
         for kw in keywords:
             escaped_kw = re.escape(str(kw))
-            zero_match = re.search(rf'{escaped_kw}\s*流水\s*(?:服务费)?\s*0(?![\\d.])', line)
+            flow_scope = rf'(?:{escaped_kw}[^\d%;\n]{{0,20}}流水|流水[^\d%;\n]{{0,20}}{escaped_kw})'
+            zero_match = re.search(
+                rf'{flow_scope}[^\d%;\n]*(?:服务费)?\s*0(?![\d.])',
+                line,
+                re.IGNORECASE,
+            )
             if zero_match and service_type == '流水':
                 return (0.0, 0.0)
 
-            liushui_pct = re.search(rf'{escaped_kw}\s*流水\s*(?:服务费)?\s*(\d+(?:\.\d+)?)\s*%', line)
+            liushui_pct = re.search(
+                rf'{flow_scope}[^\d%;\n]*(?:服务费)?\s*(\d+(?:\.\d+)?)\s*%',
+                line,
+                re.IGNORECASE,
+            )
             if liushui_pct and service_type == '流水':
                 return (float(liushui_pct.group(1)) / 100, 0.0)
 
-            liushui_tier = re.search(rf'{escaped_kw}\s*流水\s*(?:服务费)?\s*X', line)
+            liushui_tier = re.search(
+                rf'{flow_scope}[^\d%;\n]*(?:服务费)?\s*X',
+                line,
+                re.IGNORECASE,
+            )
             if liushui_tier and service_type == '流水':
                 result = parse_tiered_from_text(line, check_consumption)
                 if result:
@@ -386,6 +516,15 @@ def parse_fee_clause(
 
     # 流水类型回退
     if service_type == '流水':
+        has_target_flow_scope = _has_target_scoped_marker(clause, keywords, ('流水',))
+        has_other_media = any(
+            _contains_keyword(clause, kw)
+            for kw in ALL_MEDIA_KEYWORDS
+            if kw not in keywords
+        )
+        if not has_target_flow_scope and ('代投' in clause or has_other_media):
+            return (0.0, 0.0)
+
         # Support compact media-specific clauses like "GG1%".
         for kw in keywords:
             compact_media_pct = re.search(
@@ -398,6 +537,8 @@ def parse_fee_clause(
 
         generic_pct = re.search(r'(?:服务费|消耗)\s*(\d+(?:\.\d+)?)\s*%', clause)
         if generic_pct:
+            if not _has_target_scoped_marker(clause, keywords, ('流水',)):
+                return (0.0, 0.0)
             if '代投' in clause and '流水' not in clause:
                 return (0.0, 0.0)
             return (float(generic_pct.group(1)) / 100, 0.0)
@@ -409,7 +550,7 @@ def parse_fee_clause(
         return (0.0, 0.0)
 
     # 单渠道条款优先
-    if '单个渠道' in clause or '单渠道' in clause:
+    if _has_target_scoped_marker(clause, keywords, ('单个渠道', '单渠道')):
         tier_result = parse_tiered_from_text(clause, check_consumption)
         if tier_result:
             return tier_result
@@ -467,7 +608,11 @@ def parse_fee_clause(
                 for kw in ALL_MEDIA_KEYWORDS
                 if kw not in keywords
             )
-            if _has_other_in_line:
+            has_shared_scope = any(
+                marker in line
+                for marker in ('合计', '单渠道', '单个渠道', '全媒介', '客户端客户')
+            )
+            if _has_other_in_line and not has_shared_scope:
                 segment = _extract_media_segment(line, keywords)
                 if segment:
                     match_text = segment
@@ -552,7 +697,7 @@ def parse_fee_clause(
                         return (0.0, val)
 
     # 全局回退模式
-    if '单个渠道' in clause or '单渠道' in clause:
+    if _has_target_scoped_marker(clause, keywords, ('单个渠道', '单渠道')):
         range_match = re.search(r'(\d+)\s*[-~]\s*(\d+)[wW万]\s*[，,]?\s*(?:服务费)?\s*(\d+)', clause)
         if range_match:
             low = float(range_match.group(1))
@@ -569,7 +714,9 @@ def parse_fee_clause(
             if check_consumption > threshold:
                 return (float(over_match.group(2)) / 100, 0.0)
 
-    if service_type == '代投':
+    generic_scope_allowed = _generic_clause_scope_allowed(clause, keywords)
+
+    if service_type == '代投' and generic_scope_allowed:
         daitou_pct = re.search(r'代投\s*(\d+(?:\.\d+)?)\s*%', clause)
         if daitou_pct:
             return (float(daitou_pct.group(1)) / 100, 0.0)
@@ -579,18 +726,18 @@ def parse_fee_clause(
             return (float(daitou_fixed_pct.group(2)) / 100, float(daitou_fixed_pct.group(1)))
 
     generic_consumption = re.search(r'消耗\s*(\d+(?:\.\d+)?)\s*%', clause)
-    if generic_consumption:
+    if generic_consumption and generic_scope_allowed:
         return (float(generic_consumption.group(1)) / 100, 0.0)
 
     generic_fee = re.search(r'服务费\s*(\d+(?:\.\d+)?)\s*%', clause)
-    if generic_fee:
+    if generic_fee and generic_scope_allowed:
         return (float(generic_fee.group(1)) / 100, 0.0)
 
     if re.fullmatch(r'0\.\d+', clause.strip()):
         return (float(clause.strip()), 0.0)
 
     standalone_pct = re.fullmatch(r'(\d+(?:\.\d+)?)\s*%\s*[。.]?', clause.strip())
-    if standalone_pct:
+    if standalone_pct and generic_scope_allowed:
         return (float(standalone_pct.group(1)) / 100, 0.0)
 
     return (0.0, 0.0)

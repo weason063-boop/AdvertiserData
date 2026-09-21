@@ -172,6 +172,66 @@ class TestMultiMediaKeywordMatching:
         assert ttd_rate == 0.05
         assert ttd_fixed == 0.0
 
+    def test_per_media_fixed_with_shared_trailing_rate(self):
+        clause = "代投 GG 1000+FB 1000+TT 500+10%。"
+        rate, fixed = parse_fee_clause(clause, "Google", "代投", 10000)
+        assert rate == 0.10
+        assert fixed == 1000.0
+
+        rate, fixed = parse_fee_clause(clause, "Facebook", "代投", 10000)
+        assert rate == 0.10
+        assert fixed == 1000.0
+
+    def test_shared_scope_tier_keeps_full_line_for_target_media(self):
+        clause = "单渠道GG、FB、 yahoo、line 0<X≤3w，10%；X>3w，8%。"
+        rate, fixed = parse_fee_clause(clause, "Google", "代投", 20000)
+        assert rate == 0.10
+        assert fixed == 0.0
+
+    def test_ttd_clause_with_shared_media_list_and_tier(self):
+        clause = "TTD, DV360, Spotify Ads, Apple News, Taboola 合计0＜X≤ 3w，8%,3w＜X≤ 5w，7%;5w＜X ，5%。"
+        rate, fixed = parse_fee_clause(clause, "TTD", "代投", 22000)
+        assert rate == 0.08
+        assert fixed == 0.0
+
+    def test_flow_clause_allows_spaces_between_media_and_type(self):
+        rate, fixed = parse_fee_clause("哇鹅默认GG 流水1%", "Google", "流水", 10000)
+        assert rate == 0.01
+        assert fixed == 0.0
+
+    def test_long_clause_does_not_apply_scoped_tier_to_unlisted_media(self):
+        clause = (
+            "1-6月 GG/FB 单渠道 0<X≤3w，10%；X>3w，8%。\n"
+            "TTD 5%。TT 8%。DSP 5%。\n"
+            "7-12月 GG、FB、TT 6%，TTD、DSP 5%。"
+        )
+
+        rate, fixed = parse_fee_clause(clause, "TTD", "代投", 20000, calculation_date="2026年8月")
+        assert rate == 0.05
+        assert fixed == 0.0
+
+        rate, fixed = parse_fee_clause(clause, "Google", "代投", 20000, calculation_date="2026年8月")
+        assert rate == 0.06
+        assert fixed == 0.0
+
+    def test_long_clause_does_not_apply_flow_rate_to_other_managed_media(self):
+        clause = "FB/GG 各1000+消耗*7%，如合计消耗*7%大于等于3000，则免收固定的2000。GG流水服务费2%。"
+
+        rate, fixed = parse_fee_clause(clause, "TikTok", "代投", 20000)
+        assert rate == 0.0
+        assert fixed == 0.0
+
+        rate, fixed = parse_fee_clause(clause, "Google", "代投", 20000)
+        assert rate == 0.07
+        assert fixed == 1000.0
+
+    def test_long_clause_without_flow_scope_does_not_charge_flow(self):
+        clause = "GG、FB、YOUTUBE竞价、TT竞价、yandex展示效果关键词、TTD 5%；YOUTUBE预定 7%；TT预定、BING、MIQ、Taboola、Pinterest、Linkedin 8%；X 、yandex线下及项目、Reddit 6%； yahoo 、Naver 4%;"
+
+        rate, fixed = parse_fee_clause(clause, "Google", "流水", 20000)
+        assert rate == 0.0
+        assert fixed == 0.0
+
 
 class TestSpecialClauses:
     """特殊条款处理测试"""
@@ -248,6 +308,42 @@ class TestTimeAwareClauses:
         clause = "GG 8%"
         result = extract_applicable_clause(clause, "2026年1月")
         assert result == "GG 8%"
+
+
+    def test_month_only_multi_node_selects_latest_applicable_rate(self):
+        clause = "\u0033\u6708\u8d77\u6d88\u80175% \u0036\u6708\u8d77\u6d88\u80172.5%"
+
+        assert extract_applicable_clause(clause, "2026\u5e745\u6708") == "\u6d88\u80175%"
+        rate, fixed = parse_fee_clause(clause, "Google", "\u4ee3\u6295", 10000, calculation_date="2026\u5e745\u6708")
+        assert rate == 0.05
+        assert fixed == 0.0
+
+        assert extract_applicable_clause(clause, "2026-06") == "\u6d88\u80172.5%"
+        rate, fixed = parse_fee_clause(clause, "Google", "\u4ee3\u6295", 10000, calculation_date="2026-08")
+        assert rate == 0.025
+        assert fixed == 0.0
+
+    def test_year_month_multi_node_selects_latest_applicable_rate(self):
+        clause = "2026\u5e743\u6708\u8d77\u6d88\u80175% 2026\u5e746\u6708\u8d77\u6d88\u80172.5%"
+
+        rate, fixed = parse_fee_clause(clause, "Google", "\u4ee3\u6295", 10000, calculation_date="2026\u5e745\u6708")
+        assert rate == 0.05
+        assert fixed == 0.0
+
+        rate, fixed = parse_fee_clause(clause, "Google", "\u4ee3\u6295", 10000, calculation_date="2026\u5e748\u6708")
+        assert rate == 0.025
+        assert fixed == 0.0
+
+    def test_single_month_node_uses_base_clause_before_effective_month(self):
+        clause = "GG\u6d41\u6c34\u670d\u52a1\u8d391%\u30029\u6708\u8d77GG\u6d41\u6c34\u670d\u52a1\u8d390.5%\u3002"
+
+        rate, fixed = parse_fee_clause(clause, "Google", "\u6d41\u6c34", 10000, calculation_date="2026\u5e748\u6708")
+        assert rate == 0.01
+        assert fixed == 0.0
+
+        rate, fixed = parse_fee_clause(clause, "Google", "\u6d41\u6c34", 10000, calculation_date="2026\u5e749\u6708")
+        assert rate == 0.005
+        assert fixed == 0.0
 
 
 class TestClientOverrides:

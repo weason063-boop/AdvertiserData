@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
@@ -12,7 +13,7 @@ from typing import Optional
 
 import pandas as pd
 
-from .clause_parser import parse_fee_clause
+from .clause_parser import get_media_keywords, parse_fee_clause
 from .client_overrides import apply_post_overrides
 from .contract_loader import (
     extract_date_from_filename,
@@ -176,6 +177,12 @@ def _to_float(value) -> float:
     )
     parsed = pd.to_numeric(cleaned, errors="coerce")
     return float(parsed) if pd.notna(parsed) else 0.0
+
+
+def _normalize_customer_key(value: object) -> str:
+    """Normalize customer labels used to join consumption rows to contracts."""
+    text = unicodedata.normalize("NFKC", str(value or "")).strip().casefold()
+    return re.sub(r"\s+", "", text)
 
 
 def _normalize_header_key(value: object) -> str:
@@ -990,10 +997,27 @@ def calculate_service_fees(
 
     coupon_idx = df.columns.get_loc(_COL_COUPON) if _COL_COUPON in df.columns else len(df.columns)
 
+    normalized_contract_keys: dict[str, list[str]] = {}
+    for contract_customer in contract_terms:
+        normalized_contract_keys.setdefault(
+            _normalize_customer_key(contract_customer),
+            [],
+        ).append(contract_customer)
+
+    def resolve_clause(customer_name: str) -> str:
+        exact_clause = contract_terms.get(customer_name)
+        if exact_clause is not None:
+            return str(exact_clause)
+
+        candidates = normalized_contract_keys.get(_normalize_customer_key(customer_name), [])
+        if len(candidates) == 1:
+            return str(contract_terms[candidates[0]])
+        return "无"
+
     combined_consumption: dict[tuple[str, str], float] = {}
     for customer in df["母公司"].dropna().unique():
         customer_str = str(customer).strip()
-        clause = contract_terms.get(customer_str, "无")
+        clause = resolve_clause(customer_str)
 
         if "合计" in str(clause):
             customer_df = df[df["母公司"] == customer]
@@ -1006,8 +1030,6 @@ def calculate_service_fees(
     fixed_fees: list[float | None] = [None] * len(df)
     customer_fixed_fee_filled = set()
     unsupported_service_type_logged: set[str] = set()
-    from billing.clause_parser import MEDIA_KEYWORDS
-
     for row_idx, (_, row) in enumerate(df.iterrows()):
         customer = row["母公司"]
         media = row["媒介"]
@@ -1016,7 +1038,7 @@ def calculate_service_fees(
         is_managed_service = _is_managed_service_type(service_type)
 
         customer_str = str(customer).strip() if pd.notna(customer) else ""
-        clause = contract_terms.get(customer_str, "无")
+        clause = resolve_clause(customer_str)
 
         liushui_consumption = _to_float(row.get("流水消耗"))
         daitou_consumption = _to_float(row.get("代投消耗"))
@@ -1110,7 +1132,7 @@ def calculate_service_fees(
         if is_managed_service and daitou_consumption > 1e-9 and fixed > 0:
             contains_ge_han = any(kw in str(clause) for kw in ["含", "各", "单渠道", "单个渠道", "每个"])
             contains_heji = any(kw in str(clause) for kw in ["合计", "总体", "一共"])
-            media_aliases = MEDIA_KEYWORDS.get(media, [media])
+            media_aliases = get_media_keywords(media)
             media_in_clause = any(a.lower() in str(clause).lower() for a in media_aliases)
             # Explicit per-media markers such as "各1000" must still count per
             # media even when the clause also contains aggregate waiver text
@@ -1119,18 +1141,64 @@ def calculate_service_fees(
             group_key = media
             if is_per_media and not contains_ge_han:
                 try:
-                    from billing.clause_parser import _extract_media_segment, _keyword_regex, MEDIA_KEYWORDS as _MK
+                    from billing.clause_parser import _keyword_regex, MEDIA_KEYWORDS as _MK
                     for clause_line in re.split(r'[;,\n；。，]', str(clause)):
+                        # Skip flow-only lines when extracting group key for managed delivery fixed fee
+                        if '流水' in clause_line and '代投' not in clause_line:
+                            continue
                         if any(a.lower() in clause_line.lower() for a in media_aliases):
-                            seg = _extract_media_segment(clause_line, media_aliases)
-                            if seg:
-                                grouped = []
-                                for mk, aliases in _MK.items():
-                                    if any(_keyword_regex(a).search(seg) for a in aliases):
-                                        grouped.append(mk)
-                                if grouped:
-                                    group_key = "+".join(sorted(set(grouped)))
-                                break
+                            # Find all media present in the clause line and their positions
+                            present_media = []
+                            for mk, aliases in _MK.items():
+                                first_match = None
+                                for a in aliases:
+                                    m = _keyword_regex(a).search(clause_line)
+                                    if m:
+                                        if first_match is None or m.start() < first_match.start():
+                                            first_match = m
+                                if first_match:
+                                    present_media.append((mk, first_match.start(), first_match.end()))
+
+                            # Sort by start position
+                            present_media.sort(key=lambda x: x[1])
+
+                            # Partition into symmetric groups where adjacent media with no \d or % between them share a group
+                            groups = []
+                            current_group = []
+                            for i, (mk, start, end) in enumerate(present_media):
+                                if not current_group:
+                                    current_group.append(mk)
+                                else:
+                                    prev_end = present_media[i-1][2]
+                                    text_between = clause_line[prev_end:start]
+                                    if not re.search(r'\d|%', text_between):
+                                        current_group.append(mk)
+                                    else:
+                                        groups.append(current_group)
+                                        current_group = [mk]
+                            if current_group:
+                                groups.append(current_group)
+
+                            # Find which group contains our target media
+                            normalized_media = str(media or "").strip().casefold()
+                            target_media_keys = {
+                                mk
+                                for mk, aliases in _MK.items()
+                                if str(mk).strip().casefold() == normalized_media
+                                or any(
+                                    str(alias).strip().casefold() == normalized_media
+                                    for alias in aliases
+                                )
+                            }
+                            target_group = None
+                            for g in groups:
+                                if any(mk in target_media_keys for mk in g):
+                                    target_group = g
+                                    break
+
+                            if target_group:
+                                group_key = "+".join(sorted(set(target_group)))
+                            break
                 except Exception as exc:
                     logger.debug("Failed to extract grouped media for %s: %s", media, exc)
 

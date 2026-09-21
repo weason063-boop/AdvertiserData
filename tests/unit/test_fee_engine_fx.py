@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 import pandas as pd
 import pytest
 from openpyxl import load_workbook
@@ -271,7 +271,7 @@ def test_header_normalization_prefers_nonzero_variant_numeric_value(tmp_path, mo
 
 
 def test_jpy_sheet_converts_with_hangseng_snapshot(tmp_path, monkeypatch):
-    src = tmp_path / "consumption.xlsx"
+    src = tmp_path / "2026年3月消耗.xlsx"
     out = tmp_path / "out.xlsx"
 
     jpy_df = pd.DataFrame(_base_rows())
@@ -295,7 +295,7 @@ def test_jpy_sheet_converts_with_hangseng_snapshot(tmp_path, monkeypatch):
 
 
 def test_eur_sheet_converts_with_hangseng_snapshot(tmp_path, monkeypatch):
-    src = tmp_path / "consumption.xlsx"
+    src = tmp_path / "2026年3月消耗.xlsx"
     out = tmp_path / "out.xlsx"
 
     eur_df = pd.DataFrame(_base_rows())
@@ -319,7 +319,7 @@ def test_eur_sheet_converts_with_hangseng_snapshot(tmp_path, monkeypatch):
 
 
 def test_jpy_missing_snapshot_fields_raises(tmp_path, monkeypatch):
-    src = tmp_path / "consumption.xlsx"
+    src = tmp_path / "2026年3月消耗.xlsx"
 
     jpy_df = pd.DataFrame(_base_rows())
     jpy_df["代投消耗"] = 100000
@@ -346,7 +346,7 @@ def test_jpy_missing_snapshot_fields_raises(tmp_path, monkeypatch):
 
 
 def test_other_sheet_jpy_alias_normalizes_to_jpy(tmp_path, monkeypatch):
-    src = tmp_path / "consumption.xlsx"
+    src = tmp_path / "2026年3月消耗.xlsx"
     out = tmp_path / "out.xlsx"
 
     other_df = pd.DataFrame(_base_rows())
@@ -372,7 +372,7 @@ def test_other_sheet_jpy_alias_normalizes_to_jpy(tmp_path, monkeypatch):
 
 
 def test_other_sheet_eur_alias_normalizes_to_eur(tmp_path, monkeypatch):
-    src = tmp_path / "consumption.xlsx"
+    src = tmp_path / "2026年3月消耗.xlsx"
     out = tmp_path / "out.xlsx"
 
     other_df = pd.DataFrame(_base_rows())
@@ -437,7 +437,7 @@ def test_other_currency_summary_sheet_bill_total_fallback_converts_then_calculat
 
 
 def test_per_media_fixed_fee_is_applied_on_first_matching_row(tmp_path, monkeypatch):
-    src = tmp_path / "consumption.xlsx"
+    src = tmp_path / "2026年3月消耗.xlsx"
     out = tmp_path / "out.xlsx"
 
     df = pd.DataFrame(
@@ -481,7 +481,7 @@ def test_per_media_fixed_fee_is_applied_on_first_matching_row(tmp_path, monkeypa
 
 
 def test_per_media_fixed_fee_not_collapsed_by_aggregate_waiver_phrase(tmp_path, monkeypatch):
-    src = tmp_path / "consumption.xlsx"
+    src = tmp_path / "2026年3月消耗.xlsx"
     out = tmp_path / "out.xlsx"
 
     df = pd.DataFrame(
@@ -530,7 +530,7 @@ def test_per_media_fixed_fee_not_collapsed_by_aggregate_waiver_phrase(tmp_path, 
 
 
 def test_fixed_fee_not_charged_when_customer_has_no_managed_consumption(tmp_path, monkeypatch):
-    src = tmp_path / "consumption.xlsx"
+    src = tmp_path / "2026年3月消耗.xlsx"
     out = tmp_path / "out.xlsx"
 
     df = pd.DataFrame(
@@ -571,7 +571,7 @@ def test_fixed_fee_not_charged_when_customer_has_no_managed_consumption(tmp_path
 
 
 def test_customer_level_fixed_fee_is_applied_once(tmp_path, monkeypatch):
-    src = tmp_path / "consumption.xlsx"
+    src = tmp_path / "2026年3月消耗.xlsx"
     out = tmp_path / "out.xlsx"
 
     df = pd.DataFrame(
@@ -765,7 +765,7 @@ def test_client_account_sheet_blank_currency_defaults_to_usd(tmp_path, monkeypat
 
 
 def test_service_type_variant_liushui_plus_daitou_is_normalized(tmp_path, monkeypatch):
-    src = tmp_path / "consumption.xlsx"
+    src = tmp_path / "2026年3月消耗.xlsx"
     out = tmp_path / "out.xlsx"
 
     df = pd.DataFrame(
@@ -797,3 +797,104 @@ def test_service_type_variant_liushui_plus_daitou_is_normalized(tmp_path, monkey
     result = pd.read_excel(out)
     # 代投100*10% + 流水50*10% = 15
     assert pytest.approx(float(result["服务费"].fillna(0).iloc[0]), rel=1e-4) == 15.0
+
+
+def test_symmetric_media_group_dedup_lolarose(tmp_path, monkeypatch):
+    src = tmp_path / "2026年4月消耗.xlsx"
+    out = tmp_path / "out.xlsx"
+
+    df = pd.DataFrame(
+        [
+            {
+                "母公司": "lolarose",
+                "媒介": "Google",
+                "服务类型": "代投",
+                "代投消耗": 2000,
+                "流水消耗": 0,
+                "Coupon": 0,
+            },
+            {
+                "母公司": "lolarose",
+                "媒介": "Bing",
+                "服务类型": "代投",
+                "代投消耗": 3000,
+                "流水消耗": 0,
+                "Coupon": 0,
+            },
+        ]
+    )
+    with pd.ExcelWriter(src) as writer:
+        df.to_excel(writer, sheet_name="USD", index=False)
+
+    monkeypatch.setattr(
+        "billing.fee_engine.load_contract_terms",
+        lambda _p: {
+            "lolarose": "4月起 流水 GG+FB+BING 1%;代投 GG+BING，1000+7%；FB，1000+7%；"
+        },
+    )
+
+    calculate_service_fees(
+        str(src),
+        contract_path="dummy.xlsx",
+        output_path=str(out),
+        use_db=False,
+        calculation_date="2026年4月",
+        exchange_context=_exchange_context(),
+    )
+
+    result = pd.read_excel(out)
+    fixed_values = [float(v or 0) for v in result["固定服务费"].fillna(0).tolist()]
+    assert sum(fixed_values) == 1000.0
+    assert fixed_values == [1000.0, 0.0] or fixed_values == [0.0, 1000.0]
+
+
+def test_customer_contract_lookup_ignores_case_and_space_variants(tmp_path, monkeypatch):
+    src = tmp_path / "2026年8月消耗.xlsx"
+    out = tmp_path / "out.xlsx"
+
+    df = pd.DataFrame(
+        [
+            {
+                "母公司": "Ecoflow中东非",
+                "媒介": "Google",
+                "服务类型": "代投",
+                "代投消耗": 1000,
+                "流水消耗": 0,
+                "Coupon": 0,
+            },
+            {
+                "母公司": "Lola Rose",
+                "媒介": "Google",
+                "服务类型": "代投",
+                "代投消耗": 2000,
+                "流水消耗": 0,
+                "Coupon": 0,
+            },
+        ]
+    )
+    with pd.ExcelWriter(src) as writer:
+        df.to_excel(writer, sheet_name="USD", index=False)
+
+    monkeypatch.setattr(
+        "billing.fee_engine.load_contract_terms",
+        lambda _p: {
+            "ecoflow中东非": "客户端客户 消耗 4%.",
+            "lolarose": "代投 GG 1000+7%",
+        },
+    )
+
+    calculate_service_fees(
+        str(src),
+        contract_path="dummy.xlsx",
+        output_path=str(out),
+        use_db=False,
+        calculation_date="2026年8月",
+        exchange_context=_exchange_context(),
+    )
+
+    result = pd.read_excel(out)
+    fee_map = result.set_index("母公司")["服务费"].fillna(0).astype(float).to_dict()
+    fixed_map = result.set_index("母公司")["固定服务费"].fillna(0).astype(float).to_dict()
+    assert pytest.approx(fee_map["Ecoflow中东非"], rel=1e-4) == 40.0
+    assert pytest.approx(fee_map["Lola Rose"], rel=1e-4) == 140.0
+    assert pytest.approx(fixed_map["Lola Rose"], rel=1e-4) == 1000.0
