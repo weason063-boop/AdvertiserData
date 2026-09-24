@@ -195,6 +195,30 @@ def migrate_feishu_contract_lines(
     unchanged_count = 0
 
     try:
+        # 1. 备份并聚合上一次同步的行数据，以便后续进行比对
+        existing_lines = db.query(ClientContractLine).filter(
+            ClientContractLine.source_type == source_type,
+            ClientContractLine.source_token == source_token,
+        ).all()
+
+        previous_clients_map: dict[str, list[dict[str, Any]]] = {}
+        for line in existing_lines:
+            line_payload = {
+                "name": line.client_name,
+                "business_type": line.business_type,
+                "department": line.department,
+                "entity": line.entity,
+                "fee_clause": line.fee_clause,
+                "payment_term": line.payment_term,
+                "_source_row_index": line.source_row_index,
+            }
+            previous_clients_map.setdefault(line.client_name, []).append(line_payload)
+
+        previous_chosen_map: dict[str, dict[str, Any]] = {}
+        for prev_name, prev_rows in previous_clients_map.items():
+            previous_chosen_map[prev_name] = _pick_preferred_contract_line(prev_rows)
+
+        # 2. 清理并写入新的行数据
         db.query(ClientContractLine).filter(
             ClientContractLine.source_type == source_type,
             ClientContractLine.source_token == source_token,
@@ -277,6 +301,30 @@ def migrate_feishu_contract_lines(
                 )
                 unchanged_count += 1
                 continue
+
+            # 检测飞书的数据是否真的发生了改变。如果没变，且本地不存在 pending 记录，说明是本地微调，忽略它以保留本地修改。
+            feishu_changed = True
+            if client_name in previous_chosen_map:
+                prev_chosen = previous_chosen_map[client_name]
+                feishu_changes = []
+                for field_name in _REVIEWABLE_FIELDS:
+                    prev_val = _to_text(prev_chosen.get(field_name))
+                    new_val = _to_text(chosen.get(field_name))
+                    if prev_val != new_val:
+                        feishu_changes.append(field_name)
+                if not feishu_changes:
+                    feishu_changed = False
+
+            if not feishu_changed:
+                existing_pending = db.query(ClientContractChangeReview).filter(
+                    ClientContractChangeReview.client_name == client_name,
+                    ClientContractChangeReview.source_type == source_type,
+                    ClientContractChangeReview.source_token == source_token,
+                    ClientContractChangeReview.status == "pending",
+                ).first()
+                if not existing_pending:
+                    unchanged_count += 1
+                    continue
 
             _upsert_pending_contract_change_review(
                 db,

@@ -1,4 +1,4 @@
-﻿/* Reusable Action Buttons */
+/* Reusable Action Buttons */
 .btn-action {
   padding: 0.6rem 1.25rem;
   border-radius: var(--radius-md);
@@ -361,6 +361,10 @@
   top: 0;
   z-index: 11;
   text-align: left;
+}
+
+.client-history-table th {
+  text-align: center !important;
 }
 
 .latest-month-table th.col-client,

@@ -1,10 +1,11 @@
-import { ArrowLeft } from 'lucide-react'
+import { ArrowLeft, TrendingUp } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { apiJson, isApiHttpError } from './apiClient'
 import { BILLING_DETAIL_COLUMNS, type BillingDetailColumn } from './billingDetailColumns'
 import type { ClientHistoryResponse, ClientHistoryRow } from './billingTypes'
 import { EmptyState } from './EmptyState'
 import { Skeleton } from './Skeleton'
+import { ClientMonthTrendModal } from './ClientMonthTrendModal'
 
 interface ClientHistoryDetailPanelProps {
   active: boolean
@@ -45,6 +46,7 @@ export function ClientHistoryDetailPanel({
   const [data, setData] = useState<ClientHistoryResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [errorMessage, setErrorMessage] = useState('')
+  const [selectedTrendMonth, setSelectedTrendMonth] = useState<string | null>(null)
 
   useEffect(() => {
     if (!active || !isAuthenticated || !clientName) return
@@ -202,7 +204,17 @@ export function ClientHistoryDetailPanel({
                         <tbody>
                           {rows.map((row) => (
                             <tr key={row.month}>
-                              <td className="cell-name">{row.month}</td>
+                              <td className="cell-name">
+                                <button
+                                  type="button"
+                                  className="month-trend-trigger-btn"
+                                  onClick={() => setSelectedTrendMonth(row.month)}
+                                  title="点击查看趋势分析"
+                                >
+                                  {row.month}
+                                  <TrendingUp size={12} className="trend-icon" />
+                                </button>
+                              </td>
                               {BILLING_DETAIL_COLUMNS.map((column) => (
                                 <td key={column.key} className={column.numeric ? 'cell-number' : 'cell-type'}>
                                   {renderMetricCell(row, column, formatNumber)}
@@ -220,6 +232,15 @@ export function ClientHistoryDetailPanel({
           )}
         </div>
       </div>
+      {selectedTrendMonth && (
+        <ClientMonthTrendModal
+          clientName={clientName}
+          selectedMonth={selectedTrendMonth}
+          rows={rows}
+          formatNumber={formatNumber}
+          onClose={() => setSelectedTrendMonth(null)}
+        />
+      )}
     </section>
   )
 }

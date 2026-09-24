@@ -245,8 +245,6 @@ const calcNullablePct = (delta: number | null, baseline: number | null) => {
   return (delta / baseline) * 100
 }
 
-const sortable = (value: number | null) => (typeof value === 'number' ? value : Number.NEGATIVE_INFINITY)
-
 const formatQuarterLabel = (quarter: string | null | undefined) => {
   if (!quarter) return '—'
   return quarter.replace('-Q', ' Q')
@@ -612,40 +610,47 @@ export function Dashboard({ data, preferredMonth, loading, onRequireAuth }: Dash
   const monthTotal = activeMonthPoint
     ? (metric === 'consumption' ? activeMonthPoint.total_consumption : activeMonthPoint.total_service_fee)
     : 0
-  const monthRows = useMemo<MonthWorkbenchRow[]>(() => [...monthClients].map((item, index) => {
-    const curr = metric === 'consumption' ? item.consumption : item.service_fee
-    const prevMonth = metric === 'consumption'
-      ? (item.prev_month_consumption ?? item.prev_consumption ?? null)
-      : (item.prev_month_service_fee ?? item.prev_service_fee ?? null)
-    const yoy = metric === 'consumption'
-      ? (item.yoy_consumption ?? null)
-      : (item.yoy_service_fee ?? null)
-    const momDelta = metric === 'consumption'
-      ? (item.mom_delta ?? item.consumption_delta ?? null)
-      : (item.mom_fee_delta ?? item.fee_delta ?? null)
-    const yoyDelta = metric === 'consumption'
-      ? (item.yoy_delta ?? null)
-      : (item.yoy_fee_delta ?? null)
-    return {
-      name: item.client_name,
-      rank: item.rank ?? index + 1,
-      curr,
-      prevMonth,
-      yoy,
-      momDelta,
-      momDeltaPct: calcNullablePct(momDelta, prevMonth),
-      momRankChange: item.mom_rank_change ?? item.rank_change ?? null,
-      yoyDelta,
-      yoyDeltaPct: calcNullablePct(yoyDelta, yoy),
-      yoyRankChange: item.yoy_rank_change ?? null,
-      share: monthTotal > 0 ? (curr / monthTotal) * 100 : 0,
-    }
-  }).sort((a, b) => b.curr - a.curr), [metric, monthClients, monthTotal])
+  const monthRows = useMemo<MonthWorkbenchRow[]>(() => {
+    const sortedClients = [...monthClients].sort((a, b) => {
+      const valA = metric === 'consumption' ? a.consumption : a.service_fee
+      const valB = metric === 'consumption' ? b.consumption : b.service_fee
+      return valB - valA
+    })
+    return sortedClients.map((item, index) => {
+      const curr = metric === 'consumption' ? item.consumption : item.service_fee
+      const prevMonth = metric === 'consumption'
+        ? (item.prev_month_consumption ?? item.prev_consumption ?? null)
+        : (item.prev_month_service_fee ?? item.prev_service_fee ?? null)
+      const yoy = metric === 'consumption'
+        ? (item.yoy_consumption ?? null)
+        : (item.yoy_service_fee ?? null)
+      const momDelta = metric === 'consumption'
+        ? (item.mom_delta ?? item.consumption_delta ?? null)
+        : (item.mom_fee_delta ?? item.fee_delta ?? null)
+      const yoyDelta = metric === 'consumption'
+        ? (item.yoy_delta ?? null)
+        : (item.yoy_fee_delta ?? null)
+      return {
+        name: item.client_name,
+        rank: index + 1,
+        curr,
+        prevMonth,
+        yoy,
+        momDelta,
+        momDeltaPct: calcNullablePct(momDelta, prevMonth),
+        momRankChange: item.mom_rank_change ?? item.rank_change ?? null,
+        yoyDelta,
+        yoyDeltaPct: calcNullablePct(yoyDelta, yoy),
+        yoyRankChange: item.yoy_rank_change ?? null,
+        share: monthTotal > 0 ? (curr / monthTotal) * 100 : 0,
+      }
+    })
+  }, [metric, monthClients, monthTotal])
 
-  const monthShareRows = [...monthRows].sort((a, b) => b.curr - a.curr).slice(0, 100)
-  const monthDualRows = [...monthRows].sort((a, b) => b.curr - a.curr)
-  const monthMomRows = [...monthRows].sort((a, b) => sortable(b.momDelta) - sortable(a.momDelta))
-  const monthYoyRows = [...monthRows].sort((a, b) => sortable(b.yoyDelta) - sortable(a.yoyDelta))
+  const monthShareRows = [...monthRows].sort((a, b) => a.rank - b.rank).slice(0, 100)
+  const monthDualRows = [...monthRows].sort((a, b) => a.rank - b.rank)
+  const monthMomRows = [...monthRows].sort((a, b) => a.rank - b.rank)
+  const monthYoyRows = [...monthRows].sort((a, b) => a.rank - b.rank)
 
   const quarterTotal = quarterTarget
     ? (metric === 'consumption' ? quarterTarget.total_consumption : quarterTarget.total_service_fee)
@@ -654,40 +659,47 @@ export function Dashboard({ data, preferredMonth, loading, onRequireAuth }: Dash
     () => activeQuarterCompare?.clients ?? [],
     [activeQuarterCompare],
   )
-  const quarterRows = useMemo<QuarterRow[]>(() => quarterClients.map((item, index) => {
-    const curr = metric === 'consumption' ? item.consumption : item.service_fee
-    const prevQuarter = metric === 'consumption'
-      ? (item.prev_quarter_consumption ?? item.prev_consumption ?? null)
-      : (item.prev_quarter_service_fee ?? item.prev_service_fee ?? null)
-    const yoy = metric === 'consumption'
-      ? (item.yoy_consumption ?? null)
-      : (item.yoy_service_fee ?? null)
-    const qoqDelta = metric === 'consumption'
-      ? (item.qoq_delta ?? item.consumption_delta ?? null)
-      : (item.qoq_fee_delta ?? item.fee_delta ?? null)
-    const yoyDelta = metric === 'consumption'
-      ? (item.yoy_delta ?? null)
-      : (item.yoy_fee_delta ?? null)
-    return {
-      name: item.client_name,
-      rank: item.rank ?? index + 1,
-      curr,
-      prevQuarter,
-      yoy,
-      qoqDelta,
-      qoqDeltaPct: calcNullablePct(qoqDelta, prevQuarter),
-      qoqRankChange: item.qoq_rank_change ?? item.rank_change ?? null,
-      yoyDelta,
-      yoyDeltaPct: calcNullablePct(yoyDelta, yoy),
-      yoyRankChange: item.yoy_rank_change ?? null,
-      share: quarterTotal > 0 ? (curr / quarterTotal) * 100 : 0,
-    }
-  }), [metric, quarterClients, quarterTotal])
+  const quarterRows = useMemo<QuarterRow[]>(() => {
+    const sortedClients = [...quarterClients].sort((a, b) => {
+      const valA = metric === 'consumption' ? a.consumption : a.service_fee
+      const valB = metric === 'consumption' ? b.consumption : b.service_fee
+      return valB - valA
+    })
+    return sortedClients.map((item, index) => {
+      const curr = metric === 'consumption' ? item.consumption : item.service_fee
+      const prevQuarter = metric === 'consumption'
+        ? (item.prev_quarter_consumption ?? item.prev_consumption ?? null)
+        : (item.prev_quarter_service_fee ?? item.prev_service_fee ?? null)
+      const yoy = metric === 'consumption'
+        ? (item.yoy_consumption ?? null)
+        : (item.yoy_service_fee ?? null)
+      const qoqDelta = metric === 'consumption'
+        ? (item.qoq_delta ?? item.consumption_delta ?? null)
+        : (item.qoq_fee_delta ?? item.fee_delta ?? null)
+      const yoyDelta = metric === 'consumption'
+        ? (item.yoy_delta ?? null)
+        : (item.yoy_fee_delta ?? null)
+      return {
+        name: item.client_name,
+        rank: index + 1,
+        curr,
+        prevQuarter,
+        yoy,
+        qoqDelta,
+        qoqDeltaPct: calcNullablePct(qoqDelta, prevQuarter),
+        qoqRankChange: item.qoq_rank_change ?? item.rank_change ?? null,
+        yoyDelta,
+        yoyDeltaPct: calcNullablePct(yoyDelta, yoy),
+        yoyRankChange: item.yoy_rank_change ?? null,
+        share: quarterTotal > 0 ? (curr / quarterTotal) * 100 : 0,
+      }
+    })
+  }, [metric, quarterClients, quarterTotal])
 
-  const quarterShareRows = [...quarterRows].sort((a, b) => b.curr - a.curr).slice(0, 100)
-  const quarterDualRows = [...quarterRows].sort((a, b) => b.curr - a.curr)
-  const quarterQoqRows = [...quarterRows].sort((a, b) => sortable(b.qoqDelta) - sortable(a.qoqDelta))
-  const quarterYoyRows = [...quarterRows].sort((a, b) => sortable(b.yoyDelta) - sortable(a.yoyDelta))
+  const quarterShareRows = [...quarterRows].sort((a, b) => a.rank - b.rank).slice(0, 100)
+  const quarterDualRows = [...quarterRows].sort((a, b) => a.rank - b.rank)
+  const quarterQoqRows = [...quarterRows].sort((a, b) => a.rank - b.rank)
+  const quarterYoyRows = [...quarterRows].sort((a, b) => a.rank - b.rank)
 
   const monthSummaryCards = useMemo<QuarterSummaryCard[]>(() => {
     if (!activeMonthPoint) return []
